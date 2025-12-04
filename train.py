@@ -16,16 +16,22 @@ import time
 import numpy as np
 import gymnasium as gym
 import torch
+import time
 
 from agents.cartpole_dqn import DQNSolver, DQNConfig
 from scores.score_logger import ScoreLogger
 
 ENV_NAME = "CartPole-v1"
 MODEL_DIR = "models"
-MODEL_PATH = os.path.join(MODEL_DIR, "cartpole_dqn.torch")
+TS = (str(time.localtime().tm_mon)+"m"
+      + str(time.localtime().tm_mday)+"d"
+      + str(time.localtime().tm_hour)+"h"
+      + str(time.localtime().tm_min)+"min")
+
+MODEL_PATH = os.path.join(MODEL_DIR, f"cartpole_dqn_{TS}.torch")
 
 
-def train(num_episodes: int = 200, terminal_penalty: bool = True) -> DQNSolver:
+def train_dqn(num_episodes: int = 200, terminal_penalty: bool = True, save_path = MODEL_PATH, saved = True) -> DQNSolver:
     """
     Main training loop:
       - Creates the environment and agent
@@ -35,7 +41,9 @@ def train(num_episodes: int = 200, terminal_penalty: bool = True) -> DQNSolver:
           * Log episode score with ScoreLogger
       - Saves the trained model to disk
     """
-    os.makedirs(MODEL_DIR, exist_ok=True)
+
+    if saved:
+        os.makedirs(MODEL_DIR, exist_ok=True)
 
     # Create CartPole environment (no render during training for speed)
     env = gym.make(ENV_NAME)
@@ -89,16 +97,73 @@ def train(num_episodes: int = 200, terminal_penalty: bool = True) -> DQNSolver:
 
     env.close()
     # Persist the trained model
-    agent.save(MODEL_PATH)
-    print(f"[Train] Model saved to {MODEL_PATH}")
+    if saved:
+        agent.save(save_path)
+        print(f"[Train] Model saved to {save_path}")
     return agent
 
 
-def evaluate(model_path: str | None = None,
-             algorithm: str = "dqn",
-             episodes: int = 5,
-             render: bool = True,
-             fps: int = 60):
+def train_episode_dqn(agent, env) -> DQNSolver:
+    # TODO: 实现单个episode的训练逻辑
+    pass
+
+
+def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, float]:
+    env = gym.make("CartPole-v1")
+    # ===========根据config创建agent==========
+    obs_dim = env.observation_space.shape[0]
+    act_dim = env.action_space.n
+    agent = None
+    if isinstance(config, DQNConfig):
+        agent = DQNSolver(obs_dim, act_dim, cfg=config)
+    # elif isinstance(config, ...):
+    # TODO:实现其它agent时需要添加，用于调取对应的agent
+
+    # =======================================
+
+    discription = ""
+    save_path = ""
+    if save:  # 如果要保存模型
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        print(f"[Info] Using device: {agent.device}")
+        params = [
+            str(config.gamma),
+            str(config.lr),
+            str(config.batch_size),
+            str(config.memory_size),
+            str(config.initial_exploration),
+            str(config.eps_start),
+            str(config.eps_end),
+            str(config.eps_decay),
+            str(config.target_update)
+        ]
+        discription = "_".join(params)  # 加在文件名后用于找寻超参组合
+        save_path = MODEL_DIR
+
+    # ==========训练、评估逻辑==========
+    avg_score = 0.0
+    if isinstance(agent, DQNSolver):
+        agent = train_dqn(num_episodes=num_episodes,
+                          saved=save, save_path=os.path.join(save_path, f"cartpole_dqn_{discription}.torch"))
+        scores, avg_score = evaluate_dqn(algorithm="dqn", episodes=100, render=False, if_agent=True, agent=agent)
+    # elif isinstance(agent, ...):
+    # TODO:实现其它agent时需要添加，用于调取对应的训练函数与评估函数
+    # ================================
+    if not agent:
+        raise ValueError("Training failed, agent is None")
+    elif avg_score == 0.0:
+        raise ValueError("Evaluation failed, avg_score is 0.0")
+
+    return agent, avg_score
+
+
+def evaluate_dqn(model_path: str | None = None,
+                 algorithm: str = "dqn",
+                 episodes: int = 5,
+                 render: bool = True,
+                 fps: int = 60,
+                 if_agent=False,
+                 agent=None) -> tuple[list[int], float]:
     """
     Evaluate a trained agent in the environment using greedy policy (no ε).
     - Loads weights from disk
@@ -111,33 +176,45 @@ def evaluate(model_path: str | None = None,
         episodes: Number of evaluation episodes
         render: Whether to show a window; set False for headless CI
         fps: Target frame-rate during render (sleep-based pacing)
+        if_agent: 是否传入agent
+        agent: 传入的agent实例
+    Returns:
+        A tuple of (list of episode steps, average steps)
+        e.g., ([200, 195, 210], 201.67)
+        where higher is better (max 500 for CartPole-v1) and step is equivalent to score.
     """
     # Resolve model path
     model_dir = MODEL_DIR
-    if model_path is None:
-        candidates = [f for f in os.listdir(model_dir) if f.endswith(".torch")]
-        if not candidates:
-            raise FileNotFoundError(f"No saved model found in '{model_dir}/'. Please train first.")
-        model_path = os.path.join(model_dir, candidates[0])
-        print(f"[Eval] Using detected model: {model_path}")
-    else:
-        print(f"[Eval] Using provided model: {model_path}")
+    if not if_agent:  # 如果不用传入agent
+        if model_path is None:
+            candidates = [f for f in os.listdir(model_dir) if f.endswith(".torch")]
+            if not candidates:
+                raise FileNotFoundError(f"No saved model found in '{model_dir}/'. Please train first.")
+            model_path = os.path.join(model_dir, candidates[0])
+            print(f"[Eval] Using detected model: {model_path}")
+        else:
+            print(f"[Eval] Using provided model: {model_path}")
 
-    # Create env for evaluation; 'human' enables pygame-based rendering
-    render_mode = "human" if render else None
-    env = gym.make(ENV_NAME, render_mode=render_mode)
-    obs_dim = env.observation_space.shape[0]
-    act_dim = env.action_space.n
+        # Create env for evaluation; 'human' enables pygame-based rendering
+        render_mode = "human" if render else None
+        env = gym.make(ENV_NAME, render_mode=render_mode)
+        obs_dim = env.observation_space.shape[0]
+        act_dim = env.action_space.n
 
-    # (If you add PPO/A2C later, pick their agent classes by 'algorithm' here.)
-    if algorithm.lower() == "dqn":
-        agent = DQNSolver(obs_dim, act_dim, cfg=DQNConfig())
-    else:
-        raise ValueError(...)
+        # (If you add PPO/A2C later, pick their agent classes by 'algorithm' here.)
+        if algorithm.lower() == "dqn":
+            agent = DQNSolver(obs_dim, act_dim, cfg=DQNConfig())
+        else:
+            raise ValueError(...)
 
-    # Load trained weights
-    agent.load(model_path)
-    print(f"[Eval] Loaded {algorithm.upper()} model from: {model_path}")
+        # Load trained weights
+        agent.load(model_path)
+        print(f"[Eval] Loaded {algorithm.upper()} model from: {model_path}")
+    else:  # 如果要传入agent
+        if agent:  # 检查是否传入了agent
+            pass
+        else:  # 如果没有传入agent，报错
+            raise ValueError(...)
 
     scores = []
     # Sleep interval to approximate fps; set 0 for fastest evaluation
@@ -169,10 +246,10 @@ def evaluate(model_path: str | None = None,
     env.close()
     avg = float(np.mean(scores)) if scores else 0.0
     print(f"[Eval] Average over {episodes} episodes: {avg:.2f}")
-    return scores
+    return scores, avg
 
 
 if __name__ == "__main__":
     # Example: quick training then a short evaluation
-    agent = train(num_episodes=500, terminal_penalty=True)
-    evaluate(model_path="models/cartpole_dqn.torch", algorithm="dqn", episodes=100, render=False, fps=60)
+    agent = train_dqn(num_episodes=500, terminal_penalty=True)
+    evaluate_dqn(model_path=f"models/cartpole_dqn_{TS}.torch", algorithm="dqn", episodes=100, render=False, fps=60)

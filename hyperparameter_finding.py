@@ -1,0 +1,406 @@
+import os
+
+from matplotlib import pyplot as plt
+
+from agents import cartpole_dqn
+import train
+import numpy as np
+from typing import Dict, List, Any, Callable
+import json
+import pandas as pd
+
+from agents.cartpole_dqn import DQNConfig, DQNSolver
+
+
+class HyperparamTuner:
+    def __init__(self, algorithm: str):
+        self.algorithm = algorithm
+        self.results = []
+
+    def define_search_space(self) -> Dict[str, tuple]:
+        """定义每个超参数的采样范围"""
+        spaces = {
+            "dqn": {
+                "learning_rate": (1e-4, 1e-2, 'log'),  # (min, max, sampling_type)
+                "gamma": (0.9, 0.999, 'uniform'),
+                "batch_size": ([16, 32, 64, 128], 'choice'),
+                "memory_size": (10000, 100000, 'int'),
+                "target_update": ([100, 500, 1000], 'choice'),
+                "eps_start": (0.9, 1.0, 'uniform'),
+                "eps_end": (0.01, 0.1, 'uniform'),
+                "eps_decay": (0.99, 0.999, 'uniform'),
+                "initial_exploration": (500, 2000, 'int')
+            },
+            "ppo": {
+                "learning_rate": (1e-4, 3e-4, 'uniform'),
+                "clip_epsilon": (0.1, 0.3, 'uniform'),
+                "entropy_coef": (0.01, 0.1, 'uniform')
+            }
+        }
+        return spaces.get(self.algorithm, {})
+
+    def sample_params(self) -> Dict[str, Any]:
+        """根据搜索空间随机采样一组参数"""
+        space = self.define_search_space()
+        params = {}
+        for name, (range_val, sampling) in space.items():
+            if sampling == 'log':
+                params[name] = 10 ** np.random.uniform(np.log10(range_val[0]),
+                                                       np.log10(range_val[1]))
+            elif sampling == 'uniform':
+                params[name] = np.random.uniform(range_val[0], range_val[1])
+            elif sampling == 'choice':
+                params[name] = np.random.choice(range_val)
+            elif sampling == 'int':
+                params[name] = int(np.random.uniform(range_val[0], range_val[1]))
+        return params
+
+
+    def create_config(self, params: Dict) -> Any:
+        """根据参数创建配置实例"""
+        if self.algorithm == "dqn":
+            return DQNConfig(
+                gamma=params.get('gamma', 0.99),
+                lr=params.get('learning_rate', 1e-3),
+                batch_size=params.get('batch_size', 32),
+                memory_size=params.get('memory_size', 50000),
+                target_update=params.get('target_update', 500),
+                eps_start=params.get('eps_start', 1.0),
+                eps_end=params.get('eps_end', 0.05),
+                eps_decay=params.get('eps_decay', 0.995),
+                initial_exploration=params.get('initial_exploration', 1000)
+            )
+        # 未来可以添加其他算法的配置创建
+        raise ValueError(f"Unsupported algorithm: {self.algorithm}")
+
+
+    def run_trial(self, trial_id: int, num_episodes: int = 200) -> Dict:
+        """运行一次完整的试验"""
+        # 1. 采样参数
+        params = self.sample_params()
+        print(f"\n[Trial {trial_id}] Parameters: {params}")
+
+        # 2. 创建配置
+        config = self.create_config(params)
+
+        # 3. 训练和评估
+        try:
+            # 使用train.py中的函数
+            agent, avg_score = train.train_with_config(
+                config,
+                num_episodes=num_episodes,
+                save=False  # 不保存每个试验的模型，节省空间
+            )
+
+            # 4. 记录结果
+            result = {
+                "trial_id": trial_id,
+                **params,
+                "avg_score": avg_score,
+                "success": True
+            }
+
+        except Exception as e:
+            print(f"[Trial {trial_id}] Failed with error: {e}")
+            result = {
+                "trial_id": trial_id,
+                **params,
+                "avg_score": 0,
+                "success": False,
+                "error": str(e)
+            }
+
+        self.results.append(result)
+        self.save_progress()
+
+        return result
+
+    def run_search(self, n_trials: int = 30, num_episodes: int = 200) -> pd.DataFrame:
+        """运行多次试验"""
+        print(f"Starting hyperparameter search for {self.algorithm}")
+        print(f"Number of trials: {n_trials}")
+        print(f"Episodes per trial: {num_episodes}")
+
+        for i in range(n_trials):
+            print(f"\n{'=' * 50}")
+            print(f"Starting trial {i + 1}/{n_trials}")
+            self.run_trial(i, num_episodes)
+
+        # 保存最终结果
+        df = pd.DataFrame(self.results)
+        results_file = f"output/param_table/hyperparam_results_{self.algorithm}.csv"
+        df.to_csv(results_file, index=False)
+        print(f"\nResults saved to: {results_file}")
+
+        # 分析结果
+        self.analyze_results(df)
+
+        return df
+
+    def save_progress(self):
+        """定期保存进度，防止中断"""
+        progress_file = f"output/param_tuning_progress/tuning_progress_{self.algorithm}.json"
+        with open(progress_file, 'w') as f:
+            json.dump(self.results, f, indent=2)
+
+    def analyze_results(self, df: pd.DataFrame):
+        """分析并可视化结果"""
+        if len(df) == 0:
+            print("No results to analyze")
+            return
+
+        # 只分析成功的试验
+        success_df = df[df['success'] == True] if 'success' in df.columns else df
+
+        if len(success_df) == 0:
+            print("No successful trials to analyze")
+            return
+
+        print(f"\n{'=' * 50}")
+        print("ANALYSIS RESULTS")
+        print('=' * 50)
+
+        # 找到最佳参数组合
+        if 'avg_score' in success_df.columns:
+            best_idx = success_df['avg_score'].idxmax()
+            best_result = success_df.loc[best_idx]
+
+            print(f"\nBest trial ID: {int(best_result['trial_id'])}")
+            print(f"Best average score: {best_result['avg_score']:.2f}")
+            print("\nBest hyperparameters:")
+            for key, value in best_result.items():
+                if key not in ['trial_id', 'avg_score', 'success', 'error']:
+                    print(f"  {key}: {value}")
+
+        # 计算相关性
+        if len(success_df) > 1:
+            numeric_cols = success_df.select_dtypes(include=[np.number]).columns
+            # 移除可能不是超参数的列
+            numeric_cols = [col for col in numeric_cols
+                            if col not in ['trial_id', 'avg_score', 'success']]
+
+            if 'avg_score' in success_df.columns and len(numeric_cols) > 0:
+                correlations = {}
+                for col in numeric_cols:
+                    corr = success_df[col].corr(success_df['avg_score'])
+                    correlations[col] = corr
+
+                print("\nCorrelations with score (absolute values):")
+                for col, corr in sorted(correlations.items(),
+                                        key=lambda x: abs(x[1]), reverse=True):
+                    print(f"  {col}: {corr:.3f}")
+
+        # 绘制图表
+        self.plot_results(success_df)
+
+    def plot_results(self, df: pd.DataFrame):
+        """绘制超参数对性能的影响"""
+        if 'avg_score' not in df.columns:
+            return
+
+        # 准备绘图
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        axes = axes.flatten()
+
+        # 绘制不同超参数的散点图
+        params_to_plot = ['learning_rate', 'gamma', 'batch_size', 'memory_size']
+
+        for i, param in enumerate(params_to_plot):
+            if i >= len(axes):
+                break
+            if param in df.columns:
+                ax = axes[i]
+                ax.scatter(df[param], df['avg_score'], alpha=0.6)
+
+                # 如果参数是学习率，使用对数坐标
+                if param == 'learning_rate':
+                    ax.set_xscale('log')
+
+                ax.set_xlabel(param)
+                ax.set_ylabel('Average Score')
+                ax.set_title(f'{param} vs Score')
+                ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plot_file = f"hyperparam_analysis_{self.algorithm}.png"
+        plt.savefig(plot_file, dpi=150)
+        print(f"\nAnalysis plot saved to: {plot_file}")
+        plt.show()
+
+        # 绘制分数分布直方图
+        plt.figure(figsize=(8, 6))
+        plt.hist(df['avg_score'], bins=20, alpha=0.7, edgecolor='black')
+        plt.xlabel('Average Score')
+        plt.ylabel('Frequency')
+        plt.title('Distribution of Trial Scores')
+        plt.grid(True, alpha=0.3)
+
+        hist_file = f"score_distribution_{self.algorithm}.png"
+        plt.savefig(hist_file, dpi=150)
+        plt.show()
+
+        # 绘制分数随试验次数的变化
+        if 'trial_id' in df.columns:
+            plt.figure(figsize=(10, 6))
+            plt.plot(df['trial_id'], df['avg_score'], 'bo-', alpha=0.7)
+            plt.xlabel('Trial ID')
+            plt.ylabel('Average Score')
+            plt.title('Score Progression Over Trials')
+            plt.grid(True, alpha=0.3)
+
+            # 添加趋势线
+            if len(df) > 1:
+                z = np.polyfit(df['trial_id'], df['avg_score'], 1)
+                p = np.poly1d(z)
+                plt.plot(df['trial_id'], p(df['trial_id']), "r--", alpha=0.8,
+                         label=f'Trend (slope={z[0]:.2f})')
+                plt.legend()
+
+            trend_file = f"score_trend_{self.algorithm}.png"
+            plt.savefig(trend_file, dpi=150)
+            plt.show()
+
+
+    # 修改train.py，使其能接受外部配置
+# def train_with_early_stopping(agent, env, min_episodes=50, patience=20, num_episodes=200):
+#     """如果连续patience个episode没改进就提前停止"""
+#     best_score = -float('inf')
+#     no_improve = 0
+#     for episode in range(num_episodes):
+#         # ... 训练逻辑
+#         # TODO: 实现训练一个episode并返回得分的逻辑，见train.py中的train_episode_dqn函数
+#         agent, score = train.train_episode_dqn(agent, env)  # 假设有train_episode函数返回该episode得分
+#
+#         if score > best_score:
+#             best_score = score
+#             no_improve = 0
+#         else:
+#             no_improve += 1
+#             if no_improve >= patience and episode > min_episodes:
+#                 break
+#     return best_score
+
+
+def train_with_early_stopping(config, env, min_episodes=50, patience=20, num_episodes=200):
+    """带有早停机制的训练函数"""
+    # 创建agent
+    obs_dim = env.observation_space.shape[0]
+    act_dim = env.action_space.n
+    agent = DQNSolver(obs_dim, act_dim, cfg=config)
+
+    best_score = -float('inf')
+    no_improve = 0
+    scores = []
+
+    for episode in range(1, num_episodes + 1):
+        # 重置环境
+        state, _ = env.reset(seed=episode)
+        state = np.reshape(state, (1, obs_dim))
+        steps = 0
+
+        # 运行一个episode
+        while True:
+            action = agent.act(state)
+            next_state_raw, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            next_state = np.reshape(next_state_raw, (1, obs_dim))
+
+            agent.step(state, action, reward, next_state, done)
+            state = next_state
+            steps += 1
+
+            if done:
+                scores.append(steps)
+                break
+
+        # 检查早停条件
+        if episode >= min_episodes:
+            recent_avg = np.mean(scores[-10:]) if len(scores) >= 10 else scores[-1]
+
+            if recent_avg > best_score:
+                best_score = recent_avg
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            if no_improve >= patience:
+                print(f"Early stopping at episode {episode}")
+                break
+
+    env.close()
+    return agent, scores
+
+
+def analyze_results_from_file(csv_path: str):
+    """从CSV文件分析结果"""
+    if not os.path.exists(csv_path):
+        print(f"File not found: {csv_path}")
+        return
+
+    df = pd.read_csv(csv_path)
+
+    # 基本统计
+    print(f"Total trials: {len(df)}")
+    if 'success' in df.columns:
+        success_rate = df['success'].mean() * 100
+        print(f"Success rate: {success_rate:.1f}%")
+
+    if 'avg_score' in df.columns:
+        print(f"Average score: {df['avg_score'].mean():.2f}")
+        print(f"Best score: {df['avg_score'].max():.2f}")
+        print(f"Worst score: {df['avg_score'].min():.2f}")
+
+    # 找到最佳参数组合
+    if 'avg_score' in df.columns:
+        best_idx = df['avg_score'].idxmax()
+        best_row = df.loc[best_idx]
+
+        print(f"\nBest trial ID: {int(best_row['trial_id'])}")
+        print(f"Best score: {best_row['avg_score']:.2f}")
+
+        # 输出最佳参数
+        print("\nBest hyperparameters:")
+        param_cols = [col for col in df.columns
+                      if col not in ['trial_id', 'avg_score', 'success', 'error']]
+        for col in param_cols:
+            if col in best_row:
+                print(f"  {col}: {best_row[col]}")
+
+
+def main():
+    """主函数：运行超参数搜索"""
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Hyperparameter tuning for RL agents')
+    parser.add_argument('--algorithm', type=str, default='dqn',
+                        choices=['dqn'], help='RL algorithm to tune')
+    parser.add_argument('--trials', type=int, default=30,
+                        help='Number of hyperparameter trials')
+    parser.add_argument('--episodes', type=int, default=200,
+                        help='Number of training episodes per trial')
+
+    args = parser.parse_args()
+
+    # 创建调优器
+    tuner = HyperparamTuner(args.algorithm)
+
+    # 运行搜索
+    results_df = tuner.run_search(
+        n_trials=args.trials,
+        num_episodes=args.episodes
+    )
+
+    # 保存最佳配置
+    if len(results_df) > 0 and 'avg_score' in results_df.columns:
+        best_idx = results_df['avg_score'].idxmax()
+        best_params = results_df.loc[best_idx].to_dict()
+
+        best_config_file = f"output/best_config/best_config_{args.algorithm}.json"
+        with open(best_config_file, 'w') as f:
+            json.dump(best_params, f, indent=2)
+
+        print(f"\nBest configuration saved to: {best_config_file}")
+
+
+if __name__ == "__main__":
+    main()
