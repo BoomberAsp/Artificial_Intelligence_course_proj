@@ -1,3 +1,4 @@
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 
 from matplotlib import pyplot as plt
@@ -8,6 +9,9 @@ import numpy as np
 from typing import Dict, List, Any, Callable
 import json
 import pandas as pd
+import multiprocessing
+
+import traceback
 
 from agents.cartpole_dqn import DQNConfig, DQNSolver
 
@@ -21,16 +25,16 @@ class HyperparamTuner:
         """定义每个超参数的采样范围"""
         spaces = {
             "dqn": {
-                "learning_rate": (1e-4, 1e-2, 'log'),  # (min, max, sampling_type)
-                "gamma": (0.9, 0.999, 'uniform'),
-                "batch_size": ([16, 32, 64, 128], 'choice'),
-                "memory_size": (10000, 100000, 'int'),
-                "target_update": ([100, 500, 1000], 'choice'),
-                "eps_start": (0.9, 1.0, 'uniform'),
-                "eps_end": (0.01, 0.1, 'uniform'),
-                "eps_decay": (0.99, 0.999, 'uniform'),
-                "initial_exploration": (500, 2000, 'int')
-            },
+            "learning_rate": ((1e-4, 1e-2), 'log'),  # 元组包裹
+            "gamma": ((0.9, 0.999), 'uniform'),
+            "batch_size": ([16, 32, 64, 128], 'choice'),
+            "memory_size": ((10000, 100000), 'int'),
+            "target_update": ([100, 500, 1000], 'choice'),
+            "eps_start": ((0.9, 1.0), 'uniform'),
+            "eps_end": ((0.01, 0.1), 'uniform'),
+            "eps_decay": ((0.99, 0.999), 'uniform'),
+            "initial_exploration": ((500, 2000), 'int')
+        },
             "ppo": {
                 "learning_rate": (1e-4, 3e-4, 'uniform'),
                 "clip_epsilon": (0.1, 0.3, 'uniform'),
@@ -128,7 +132,11 @@ class HyperparamTuner:
 
         # 保存最终结果
         df = pd.DataFrame(self.results)
+
         results_file = f"output/param_table/hyperparam_results_{self.algorithm}.csv"
+        if not os.path.exists(results_file):  # 如果路径不存在，创建路径
+            os.makedirs("output/param_table", exist_ok=True)
+
         df.to_csv(results_file, index=False)
         print(f"\nResults saved to: {results_file}")
 
@@ -140,6 +148,11 @@ class HyperparamTuner:
     def save_progress(self):
         """定期保存进度，防止中断"""
         progress_file = f"output/param_tuning_progress/tuning_progress_{self.algorithm}.json"
+
+        if not os.path.exists(progress_file):  # 如果路径不存在，创建路径
+
+            os.makedirs("output/param_tuning_progress", exist_ok=True)
+
         with open(progress_file, 'w') as f:
             json.dump(self.results, f, indent=2)
 
@@ -222,7 +235,9 @@ class HyperparamTuner:
                 ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plot_file = f"hyperparam_analysis_{self.algorithm}.png"
+        plot_file = f"output/figures/plot/hyperparam_analysis_{self.algorithm}.png"
+        if not os.path.exists(plot_file):
+            os.makedirs("output/figures/plot", exist_ok=True)
         plt.savefig(plot_file, dpi=150)
         print(f"\nAnalysis plot saved to: {plot_file}")
         plt.show()
@@ -235,7 +250,9 @@ class HyperparamTuner:
         plt.title('Distribution of Trial Scores')
         plt.grid(True, alpha=0.3)
 
-        hist_file = f"score_distribution_{self.algorithm}.png"
+        hist_file = f"output/figures/hist/score_distribution_{self.algorithm}.png"
+        if not os.path.exists(hist_file):
+            os.makedirs("output/figures/hist", exist_ok=True)
         plt.savefig(hist_file, dpi=150)
         plt.show()
 
@@ -256,9 +273,232 @@ class HyperparamTuner:
                          label=f'Trend (slope={z[0]:.2f})')
                 plt.legend()
 
-            trend_file = f"score_trend_{self.algorithm}.png"
+            trend_file = f"output/figures/score_trend/score_trend_{self.algorithm}.png"
+            if not os.path.exists(trend_file):
+                os.makedirs("output/figures/score_trend", exist_ok=True)
             plt.savefig(trend_file, dpi=150)
             plt.show()
+
+    def run_search_parallel(self, n_trials: int = 30, num_episodes: int = 200,
+                            max_workers: int = None, use_gpu: bool = False) -> pd.DataFrame:
+        """
+        并行运行超参数搜索
+
+        参数:
+            n_trials: 试验总数
+            num_episodes: 每个试验的训练回合数
+            max_workers: 最大工作进程数（默认使用CPU核心数-1）
+            use_gpu: 是否使用GPU（注意：多个进程共享GPU可能造成内存冲突）
+        """
+        if max_workers is None:
+            max_workers = max(1, multiprocessing.cpu_count() - 1)
+
+        print(f"Starting parallel hyperparameter search for {self.algorithm}")
+        print(f"Number of trials: {n_trials}, Workers: {max_workers}")
+        print(f"Episodes per trial: {num_episodes}")
+        print(f"GPU acceleration: {'Enabled' if use_gpu else 'Disabled'}")
+
+        # 预先创建所有需要的目录
+        self._create_output_dirs()
+
+        # 准备所有试验的参数
+        all_trials = []
+        for i in range(n_trials):
+            params = self.sample_params()
+            all_trials.append({
+                "trial_id": i,
+                "params": params,
+                "num_episodes": num_episodes,
+                "use_gpu": use_gpu
+            })
+
+        results = []
+        completed = 0
+
+        # 使用进程池并行执行
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # 提交所有任务
+            future_to_trial = {}
+            for trial in all_trials:
+                future = executor.submit(
+                    self._run_single_trial_parallel,
+                    trial["trial_id"],
+                    trial["params"],
+                    trial["num_episodes"],
+                    trial["use_gpu"]
+                )
+                future_to_trial[future] = trial["trial_id"]
+
+            # 处理完成的任务
+            for future in as_completed(future_to_trial):
+                trial_id = future_to_trial[future]
+                try:
+                    result = future.result(timeout=3600)  # 1小时超时
+                    results.append(result)
+                    completed += 1
+
+                    # 显示进度
+                    print(f"[Parallel] Trial {trial_id} completed ({completed}/{n_trials}) - "
+                          f"Score: {result.get('avg_score', 0):.2f}, "
+                          f"Success: {result.get('success', False)}")
+
+                    # 定期保存进度
+                    if completed % 5 == 0:
+                        self.results = results
+                        self.save_progress()
+
+                except Exception as e:
+                    print(f"[Parallel] Trial {trial_id} failed: {str(e)[:100]}...")
+                    error_result = {
+                        "trial_id": trial_id,
+                        "avg_score": 0,
+                        "success": False,
+                        "error": str(e)
+                    }
+                    results.append(error_result)
+
+        # 保存最终结果
+        self.results = results
+        df = pd.DataFrame(results)
+
+        results_file = f"output/param_table/hyperparam_results_{self.algorithm}_parallel.csv"
+        df.to_csv(results_file, index=False)
+        print(f"\nParallel results saved to: {results_file}")
+
+        # 分析结果
+        self.analyze_results(df)
+
+        return df
+
+
+    def _run_single_trial_parallel(self, trial_id: int, params: Dict,
+                                   num_episodes: int, use_gpu: bool) -> Dict:
+        """
+        在独立进程中运行单个试验
+
+        注意：每个进程有独立的Python环境，需要重新导入模块
+        """
+        # 设置进程环境变量
+        import os
+        os.environ["OMP_NUM_THREADS"] = "1"
+        os.environ["MKL_NUM_THREADS"] = "1"
+
+        # 为每个进程设置不同的随机种子
+        import random
+        import numpy as np
+        seed = trial_id * 1000 + os.getpid()
+        random.seed(seed)
+        np.random.seed(seed)
+
+        # 必须在函数内部导入，因为每个进程有独立的命名空间
+        import torch
+        import gymnasium as gym
+        from agents.cartpole_dqn import DQNConfig, DQNSolver
+
+        # 设置设备
+        if use_gpu and torch.cuda.is_available():
+            device = "cuda"
+            torch.cuda.manual_seed(seed)
+        else:
+            device = "cpu"
+        torch.manual_seed(seed)
+
+        try:
+            # 创建配置
+            config = DQNConfig(
+                gamma=params.get('gamma', 0.99),
+                lr=params.get('learning_rate', 1e-3),
+                batch_size=params.get('batch_size', 32),
+                memory_size=params.get('memory_size', 50000),
+                target_update=params.get('target_update', 500),
+                eps_start=params.get('eps_start', 1.0),
+                eps_end=params.get('eps_end', 0.05),
+                eps_decay=params.get('eps_decay', 0.995),
+                initial_exploration=params.get('initial_exploration', 1000),
+                device=device
+            )
+
+            # 创建环境和智能体
+            env = gym.make("CartPole-v1")
+            obs_dim = env.observation_space.shape[0]
+            act_dim = env.action_space.n
+            agent = DQNSolver(obs_dim, act_dim, cfg=config)
+
+            # 训练循环
+            scores = []
+            for ep in range(1, num_episodes + 1):
+                state, _ = env.reset(seed=seed + ep)
+                state = np.reshape(state, (1, obs_dim))
+                steps = 0
+
+                while True:
+                    action = agent.act(state)
+                    next_state_raw, reward, terminated, truncated, _ = env.step(action)
+                    done = terminated or truncated
+                    next_state = np.reshape(next_state_raw, (1, obs_dim))
+
+                    agent.step(state, action, reward, next_state, done)
+                    state = next_state
+                    steps += 1
+
+                    if done:
+                        scores.append(steps)
+                        break
+
+            env.close()
+
+            # 计算平均分数（取最后10个episode的平均）
+            if len(scores) >= 10:
+                avg_score = np.mean(scores[-10:])
+            else:
+                avg_score = np.mean(scores) if scores else 0
+
+            # 返回结果
+            result = {
+                "trial_id": trial_id,
+                **params,
+                "avg_score": avg_score,
+                "final_scores": scores[-5:] if len(scores) >= 5 else scores,
+                "total_episodes": len(scores),
+                "device_used": device,
+                "success": True,
+                "seed": seed
+            }
+
+            return result
+
+        except Exception as e:
+            # 捕获并返回错误信息
+            error_msg = f"Trial {trial_id} error: {str(e)}"
+            return {
+                "trial_id": trial_id,
+                **params,
+                "avg_score": 0,
+                "success": False,
+                "error": error_msg,
+                "device_used": device
+            }
+
+
+    def _create_output_dirs(self):
+        """创建所有必要的输出目录"""
+        dirs = [
+            "output/param_table",
+            "output/param_tuning_progress",
+            "output/figures/plot",
+            "output/figures/hist",
+            "output/figures/score_trend",
+            "output/best_config"
+        ]
+
+        for dir_path in dirs:
+            os.makedirs(dir_path, exist_ok=True)
+
+    # 原有的串行方法，作为备选
+    # def run_search(self, n_trials: int = 30, num_episodes: int = 200) -> pd.DataFrame:
+    #     """原有的串行搜索方法"""
+    #     print(f"Starting sequential hyperparameter search for {self.algorithm}")
+    #     return super().run_search(n_trials, num_episodes)
 
 
     # 修改train.py，使其能接受外部配置
@@ -368,7 +608,7 @@ def analyze_results_from_file(csv_path: str):
 
 
 def main():
-    """主函数：运行超参数搜索"""
+    """主函数：支持并行和串行模式"""
     import argparse
 
     parser = argparse.ArgumentParser(description='Hyperparameter tuning for RL agents')
@@ -378,29 +618,64 @@ def main():
                         help='Number of hyperparameter trials')
     parser.add_argument('--episodes', type=int, default=200,
                         help='Number of training episodes per trial')
+    parser.add_argument('--parallel', action='store_true',
+                        help='Use parallel execution')
+    parser.add_argument('--workers', type=int, default=None,
+                        help='Number of parallel workers (default: CPU cores - 1)')
+    parser.add_argument('--use-gpu', action='store_true',
+                        help='Enable GPU acceleration in parallel mode')
 
     args = parser.parse_args()
 
     # 创建调优器
     tuner = HyperparamTuner(args.algorithm)
 
-    # 运行搜索
-    results_df = tuner.run_search(
-        n_trials=args.trials,
-        num_episodes=args.episodes
-    )
+    if args.parallel:
+        # 并行搜索
+        results_df = tuner.run_search_parallel(
+            n_trials=args.trials,
+            num_episodes=args.episodes,
+            max_workers=args.workers,
+            use_gpu=args.use_gpu
+        )
+    else:
+        # 串行搜索
+        results_df = tuner.run_search(
+            n_trials=args.trials,
+            num_episodes=args.episodes
+        )
 
     # 保存最佳配置
     if len(results_df) > 0 and 'avg_score' in results_df.columns:
-        best_idx = results_df['avg_score'].idxmax()
-        best_params = results_df.loc[best_idx].to_dict()
+        success_df = results_df[results_df['success'] == True] if 'success' in results_df.columns else results_df
 
-        best_config_file = f"output/best_config/best_config_{args.algorithm}.json"
-        with open(best_config_file, 'w') as f:
-            json.dump(best_params, f, indent=2)
+        if len(success_df) > 0:
+            best_idx = success_df['avg_score'].idxmax()
+            best_params = success_df.loc[best_idx].to_dict()
 
-        print(f"\nBest configuration saved to: {best_config_file}")
+            mode = "parallel" if args.parallel else "sequential"
+            best_config_file = f"output/best_config/best_config_{args.algorithm}_{mode}.json"
+
+            with open(best_config_file, 'w') as f:
+                json.dump(best_params, f, indent=2)
+
+            print(f"\nBest configuration saved to: {best_config_file}")
+
+            # 打印最佳配置摘要
+            print("\n" + "=" * 60)
+            print("BEST CONFIGURATION SUMMARY")
+            print("=" * 60)
+            print(f"Algorithm: {args.algorithm}")
+            print(f"Mode: {mode}")
+            print(f"Best Score: {best_params['avg_score']:.2f}")
+            print("\nKey Hyperparameters:")
+            key_params = ['learning_rate', 'gamma', 'batch_size', 'memory_size']
+            for param in key_params:
+                if param in best_params:
+                    print(f"  {param}: {best_params[param]}")
 
 
 if __name__ == "__main__":
     main()
+    # use python hyperparameter_finding.py --algorithm dqn --trials 500 --episodes 300 --parallel --use-gpu
+    # 电脑有显卡就加 --use-gpu，没有就不加。电脑是多核处理器就加 --parallel，不是就不加。
