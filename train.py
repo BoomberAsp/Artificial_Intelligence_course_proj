@@ -12,6 +12,7 @@ Student reading map:
 
 from __future__ import annotations
 import os
+import random
 import time
 import numpy as np
 import gymnasium as gym
@@ -254,5 +255,8 @@ def evaluate_dqn(model_path: str | None = None,
 
 if __name__ == "__main__":
     # Example: quick training then a short evaluation
-    agent = train_dqn(num_episodes=300, terminal_penalty=True, config_path="output/best_config/best_config_dqn_parallel.json")
+    # random.seed(917808)
+    # np.random.seed(917808)
+    # torch.manual_seed(917808)
+    agent = train_dqn(num_episodes=1000, terminal_penalty=True, config_path="output/best_config/Best_of_the_best_config_dqn_parallel_earlystop_12m6d16h37min.json")
     evaluate_dqn(model_path=f"models/cartpole_dqn_{TS}.torch", algorithm="dqn", episodes=100, render=False, fps=60)

@@ -1,0 +1,31 @@
+{
+  "trial_id": 163,
+  "learning_rate": 0.005440069805956358,
+  "gamma": 0.9812089433893104,
+  "batch_size": 64,
+  "memory_size": 14841,
+  "target_update": 100,
+  "eps_start": 0.905018994767173,
+  "eps_end": 0.01620939784782008,
+  "eps_decay": 0.9975561975024352,
+  "initial_exploration": 849,
+  "avg_score": 475.7,
+  "final_scores": [
+    500,
+    500,
+    313,
+    453,
+    500
+  ],
+  "total_episodes": 500,
+  "max_episodes": 500,
+  "early_stopped": false,
+  "stop_reason": "completed",
+  "device_used": "cuda",
+  "success": true,
+  "seed": 180452,
+  "early_stopping_patience": 20,
+  "early_stopping_min_episodes": 50,
+  "early_stopping_threshold": 495.0,
+  "early_stopping_window": 10
+}

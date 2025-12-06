@@ -832,7 +832,8 @@ def main():
             max_workers=args.workers,
             use_gpu=args.use_gpu,
             early_stop_patience=args.patience if args.early_stop else None,
-            early_stop_min_episodes=args.min_episodes if args.early_stop else None
+            early_stop_min_episodes=args.min_episodes if args.early_stop else None,
+            time_stamp=TS
         )
     else:
         # 串行搜索
@@ -845,7 +846,8 @@ def main():
                 max_workers=args.workers,
                 use_gpu=args.use_gpu,
                 early_stop_patience=args.patience,
-                early_stop_min_episodes=args.min_episodes
+                early_stop_min_episodes=args.min_episodes,
+                time_stamp=TS
             )
         else:
             results_df = tuner.run_search(
