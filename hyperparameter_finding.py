@@ -1,3 +1,4 @@
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
 
@@ -199,7 +200,7 @@ class HyperparamTuner:
                 pass
 
 
-    def analyze_results(self, df: pd.DataFrame):
+    def analyze_results(self, df: pd.DataFrame) -> None:
         """分析并可视化结果"""
         if len(df) == 0:
             print("No results to analyze")
@@ -254,6 +255,8 @@ class HyperparamTuner:
         if 'avg_score' not in df.columns:
             return
 
+        time_stamp = time.strftime("%Y%m%d-%H%M%S")
+
         # 准备绘图
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
         axes = axes.flatten()
@@ -278,7 +281,7 @@ class HyperparamTuner:
                 ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plot_file = f"output/figures/plot/hyperparam_analysis_{self.algorithm}.png"
+        plot_file = f"output/figures/plot/hyperparam_analysis_{self.algorithm}_{time_stamp}.png"
         if not os.path.exists(plot_file):
             os.makedirs("output/figures/plot", exist_ok=True)
         plt.savefig(plot_file, dpi=150)
@@ -293,7 +296,7 @@ class HyperparamTuner:
         plt.title('Distribution of Trial Scores')
         plt.grid(True, alpha=0.3)
 
-        hist_file = f"output/figures/hist/score_distribution_{self.algorithm}.png"
+        hist_file = f"output/figures/hist/score_distribution_{self.algorithm}_{time_stamp}.png"
         if not os.path.exists(hist_file):
             os.makedirs("output/figures/hist", exist_ok=True)
         plt.savefig(hist_file, dpi=150)
@@ -316,7 +319,7 @@ class HyperparamTuner:
                          label=f'Trend (slope={z[0]:.2f})')
                 plt.legend()
 
-            trend_file = f"output/figures/score_trend/score_trend_{self.algorithm}.png"
+            trend_file = f"output/figures/score_trend/score_trend_{self.algorithm}_{time_stamp}.png"
             if not os.path.exists(trend_file):
                 os.makedirs("output/figures/score_trend", exist_ok=True)
             plt.savefig(trend_file, dpi=150)
@@ -324,8 +327,11 @@ class HyperparamTuner:
 
     def run_search_parallel(self, n_trials: int = 30, num_episodes: int = 200,
                             max_workers: int = None, use_gpu: bool = False,
-                            early_stop_patience: int = 20,
-                            early_stop_min_episodes: int = 50) -> pd.DataFrame:
+                            early_stop_patience: int = None,
+                            early_stop_min_episodes: int = None,
+                            early_stop_threshold: float = None,
+                            early_stop_window_size: int = None,
+                            time_stamp: str|None = None) -> pd.DataFrame:
         """
         并行运行超参数搜索
 
@@ -334,7 +340,11 @@ class HyperparamTuner:
             num_episodes: 每个试验的训练回合数
             max_workers: 最大工作进程数（默认使用CPU核心数-1）
             use_gpu: 是否使用GPU（注意：多个进程共享GPU可能造成内存冲突）
-
+            early_stop_patience: 早停耐心值（连续多少个episode没有改进）
+            early_stop_min_episodes: 最小训练回合数
+            early_stop_threshold: 早停阈值（达到此分数时提前停止）
+            early_stop_window_size: 滑动窗口大小
+            time_stamp: 时间戳
         """
         if max_workers is None:
             max_workers = max(1, multiprocessing.cpu_count() - 1)
@@ -357,7 +367,10 @@ class HyperparamTuner:
                 "num_episodes": num_episodes,
                 "use_gpu": use_gpu,
                 "early_stop_patience": early_stop_patience,
-                "early_stop_min_episodes": early_stop_min_episodes
+                "early_stop_min_episodes": early_stop_min_episodes,
+                "early_stop_threshold": early_stop_threshold,
+                "early_stop_window_size": early_stop_window_size,
+                "use_early_stopping": self.use_early_stopping
             })
 
         results = []
@@ -410,7 +423,7 @@ class HyperparamTuner:
         self.results = results
         df = pd.DataFrame(results)
 
-        results_file = f"output/param_table/hyperparam_results_{self.algorithm}_parallel.csv"
+        results_file = f"output/param_table/hyperparam_results_{self.algorithm}_parallel_{time_stamp}.csv" if time_stamp else f"output/param_table/hyperparam_results_{self.algorithm}_parallel.csv"
         df.to_csv(results_file, index=False)
         print(f"\nParallel results saved to: {results_file}")
 
@@ -420,10 +433,13 @@ class HyperparamTuner:
         return df
 
     @staticmethod
-    def _run_single_trial_parallel(self, trial_id: int, params: Dict,
+    def _run_single_trial_parallel(trial_id: int, params: Dict,
                                    num_episodes: int, use_gpu: bool,
-                                   early_stop_patience: int = 20,
-                                   early_stop_min_episodes: int = 50) -> Dict:
+                                   early_stop_patience: int = None,
+                                   early_stop_min_episodes: int = None,
+                                   early_stop_threshold: float = None,
+                                   early_stop_window_size: int = None,
+                                   use_early_stopping: bool = False) -> Dict:
         """
         在独立进程中运行单个试验
 
@@ -472,26 +488,17 @@ class HyperparamTuner:
             # 创建环境
             env = gym.make("CartPole-v1")
 
-            if self.use_early_stopping:
+            if use_early_stopping and early_stop_patience is not None:
                 # 使用带有早停机制的训练函数
                 agent, scores = train_with_early_stopping(
                     config=config,
                     env=env,
-                    min_episodes=early_stop_min_episodes,
-                    patience=early_stop_patience,
+                    min_episodes=early_stop_min_episodes or 50,
+                    patience=early_stop_patience or 20,
+                    stop_threshold=early_stop_threshold or 495.0,
+                    window_size=early_stop_window_size or 10,
                     num_episodes=num_episodes  # 作为最大上限
                 )
-                actual_episodes_trained = len(scores)
-
-                # 计算平均分数（取最后10个episode或全部）
-                if len(scores) >= 10:
-                    avg_score = np.mean(scores[-10:])
-                else:
-                    avg_score = np.mean(scores) if scores else 0
-
-                # 检查是否提前停止
-                early_stopped = actual_episodes_trained < num_episodes
-                stop_reason = "early_stopped" if early_stopped else "completed"
 
             else:
                 # 原有的训练逻辑（作为备选）
@@ -564,7 +571,7 @@ class HyperparamTuner:
             }
 
 
-    @staticmethod
+
     def _create_output_dirs(self):
         """创建所有必要的输出目录"""
         dirs = [
@@ -659,7 +666,9 @@ class HyperparamTuner:
 #     return best_score
 
 
-def train_with_early_stopping(config, env, min_episodes=50, patience=20, num_episodes=200, verbose=False):
+def train_with_early_stopping(config, env, min_episodes=50, patience=20,
+                              stop_threshold=495.0, window_size=10,
+                              num_episodes=200, verbose=False):
     """
     带有早停机制的训练函数（优化版）
     """
@@ -696,8 +705,8 @@ def train_with_early_stopping(config, env, min_episodes=50, patience=20, num_epi
         # 检查早停条件
         if episode >= min_episodes:
             # 使用滑动窗口平均来减少波动影响
-            window_size = min(10, len(scores))
-            recent_avg = np.mean(scores[-window_size:])
+            window = min(window_size, len(scores))
+            recent_avg = np.mean(scores[-window:])
 
             if recent_avg > best_score:
                 best_score = recent_avg
@@ -716,9 +725,9 @@ def train_with_early_stopping(config, env, min_episodes=50, patience=20, num_epi
                 break
 
             # 可选：如果分数已经达到很高，也可以提前停止
-            if recent_avg >= 495 and episode >= 100:  # CartPole接近完美
+            if recent_avg >= stop_threshold and episode >= min_episodes:  # CartPole接近完美
                 if verbose:
-                    print(f"  Early stopping: near-perfect performance ({recent_avg:.1f})")
+                    print(f"  Early stopping: reached threshold {stop_threshold} ({recent_avg:.1f})")
                 break
 
     return agent, scores
@@ -781,10 +790,39 @@ def main():
     parser.add_argument('--use-gpu', action='store_true',
                         help='Enable GPU acceleration in parallel mode')
 
+    # 添加早停相关参数
+    parser.add_argument('--early-stop', action='store_true',
+                        help='Enable early stopping during training')
+    parser.add_argument('--patience', type=int, default=20,
+                        help='Patience for early stopping (number of episodes without improvement)')
+    parser.add_argument('--min-episodes', type=int, default=50,
+                        help='Minimum episodes before early stopping can be triggered')
+    parser.add_argument('--stop-threshold', type=float, default=495.0,
+                        help='Early stop threshold (stop if average score reaches this value)')
+    parser.add_argument('--window-size', type=int, default=10,
+                        help='Window size for moving average in early stopping')
+
     args = parser.parse_args()
 
     # 创建调优器
-    tuner = HyperparamTuner(args.algorithm)
+    tuner = HyperparamTuner(args.algorithm, use_early_stopping=args.early_stop)
+
+    TS = (str(time.localtime().tm_mon) + "m"
+          + str(time.localtime().tm_mday) + "d"
+          + str(time.localtime().tm_hour) + "h"
+          + str(time.localtime().tm_min) + "min")
+
+    # 显示早停配置信息
+    if args.early_stop:
+        print("\n" + "=" * 60)
+        print("EARLY STOPPING CONFIGURATION")
+        print("=" * 60)
+        print(f"Early stopping: ENABLED")
+        print(f"  - Patience: {args.patience} episodes")
+        print(f"  - Minimum episodes: {args.min_episodes}")
+        print(f"  - Stop threshold: {args.stop_threshold}")
+        print(f"  - Window size: {args.window_size}")
+        print("=" * 60 + "\n")
 
     if args.parallel:
         # 并行搜索
@@ -792,14 +830,28 @@ def main():
             n_trials=args.trials,
             num_episodes=args.episodes,
             max_workers=args.workers,
-            use_gpu=args.use_gpu
+            use_gpu=args.use_gpu,
+            early_stop_patience=args.patience if args.early_stop else None,
+            early_stop_min_episodes=args.min_episodes if args.early_stop else None
         )
     else:
         # 串行搜索
-        results_df = tuner.run_search(
-            n_trials=args.trials,
-            num_episodes=args.episodes
-        )
+        print("Note: Early stopping is currently only supported in parallel mode.")
+        if args.early_stop:  # 如果传入了早停参数
+            print("Switching to parallel mode to enable early stopping...")
+            results_df = tuner.run_search_parallel(
+                n_trials=args.trials,
+                num_episodes=args.episodes,
+                max_workers=args.workers,
+                use_gpu=args.use_gpu,
+                early_stop_patience=args.patience,
+                early_stop_min_episodes=args.min_episodes
+            )
+        else:
+            results_df = tuner.run_search(
+                n_trials=args.trials,
+                num_episodes=args.episodes
+            )
 
     # 保存最佳配置
     if len(results_df) > 0 and 'avg_score' in results_df.columns:
@@ -809,8 +861,16 @@ def main():
             best_idx = success_df['avg_score'].idxmax()
             best_params = success_df.loc[best_idx].to_dict()
 
-            mode = "parallel" if args.parallel else "sequential"
-            best_config_file = f"output/best_config/best_config_{args.algorithm}_{mode}.json"
+            mode = "parallel" if args.parallel or args.early_stop else "sequential"
+            early_stop_str = "_earlystop" if args.early_stop else ""
+            best_config_file = f"output/best_config/best_config_{args.algorithm}_{mode}{early_stop_str}_{TS}.json"
+
+            # 添加早停参数到最佳配置中
+            if args.early_stop:
+                best_params['early_stopping_patience'] = args.patience
+                best_params['early_stopping_min_episodes'] = args.min_episodes
+                best_params['early_stopping_threshold'] = args.stop_threshold
+                best_params['early_stopping_window'] = args.window_size
 
             with open(best_config_file, 'w') as f:
                 json.dump(best_params, f, indent=2)
@@ -823,6 +883,7 @@ def main():
             print("=" * 60)
             print(f"Algorithm: {args.algorithm}")
             print(f"Mode: {mode}")
+            print(f"Early Stopping: {'ENABLED' if args.early_stop else 'DISABLED'}")
             print(f"Best Score: {best_params['avg_score']:.2f}")
             print("\nKey Hyperparameters:")
             key_params = ['learning_rate', 'gamma', 'batch_size', 'memory_size']
@@ -830,8 +891,21 @@ def main():
                 if param in best_params:
                     print(f"  {param}: {best_params[param]}")
 
+            # 如果启用了早停，显示相关信息
+            if args.early_stop and 'early_stopped' in best_params:
+                early_stopped = best_params.get('early_stopped', False)
+                total_episodes = best_params.get('total_episodes', args.episodes)
+                if early_stopped:
+                    print(f"\nEarly Stopping Info:")
+                    print(f"  - Stopped early at episode: {total_episodes}")
+                    print(f"  - Saved episodes: {args.episodes - total_episodes}")
+                    if 'improvement_ratio' in best_params:
+                        ratio = best_params['improvement_ratio']
+                        print(f"  - Improvement ratio: {ratio:.2f}x")
+
 
 if __name__ == "__main__":
     main()
     # use python hyperparameter_finding.py --algorithm dqn --trials 500 --episodes 300 --parallel --use-gpu
+    # python hyperparameter_finding.py --algorithm dqn --trials 300 --episodes 500 --parallel --early-stop --use-gpu
     # 电脑有显卡就加 --use-gpu，没有就不加。电脑是多核处理器就加 --parallel，不是就不加。
