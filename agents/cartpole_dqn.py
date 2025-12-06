@@ -14,9 +14,12 @@ Reading guide for students:
 """
 
 from __future__ import annotations
+
+import json
 import random
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Deque, Tuple, List
 
 import numpy as np
@@ -29,18 +32,18 @@ import torch.optim as optim
 # Default Hyperparameters
 # -----------------------------
 # γ: discount factor for future rewards
-GAMMA = 0.99
+GAMMA = 0.9985
 # Learning rate for Adam optimizer
-LR = 1e-3
+LR = 0.0005
 # Mini-batch size sampled from the replay buffer
-BATCH_SIZE = 32
+BATCH_SIZE = 128
 # Replay buffer capacity (number of transitions stored)
-MEMORY_SIZE = 50_000
+MEMORY_SIZE = 61600
 # Steps to warm up the buffer with random-ish actions before training
-INITIAL_EXPLORATION_STEPS = 1_000
+INITIAL_EXPLORATION_STEPS = 500
 # ε schedule: start, final, multiplicative decay per update step
-EPS_START = 1.0
-EPS_END = 0.05
+EPS_START = 0.957
+EPS_END = 0.0723
 EPS_DECAY = 0.995
 # How often (in steps) to hard-copy online -> target network
 TARGET_UPDATE_STEPS = 500
@@ -313,3 +316,63 @@ class DQNSolver:
         """Multiplicative ε decay with lower bound EPS_END; keep a global step counter."""
         self.exploration_rate = max(self.cfg.eps_end, self.exploration_rate * self.cfg.eps_decay)
         self.steps += 1
+
+    def load_config(self, path: str | Path):
+        """
+        从 JSON 文件加载配置并应用到 agent。
+
+        Args:
+            path: JSON 配置文件的路径
+        """
+        path = Path(path) if isinstance(path, str) else path
+
+        if not path.exists():
+            raise FileNotFoundError(f"Config file not found: {path}")
+
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                config_dict = json.load(f)
+
+            # 创建新的配置对象，使用JSON中的值覆盖默认值
+            new_cfg = DQNConfig()
+
+            # 只更新JSON中存在的字段
+            for key, value in config_dict.items():
+                if hasattr(new_cfg, key):
+                    # 确保类型匹配
+                    current_type = type(getattr(new_cfg, key))
+                    try:
+                        # 尝试转换为正确的类型
+                        if current_type == bool:
+                            setattr(new_cfg, key, bool(value))
+                        elif current_type == int:
+                            setattr(new_cfg, key, int(value))
+                        elif current_type == float:
+                            setattr(new_cfg, key, float(value))
+                        elif current_type == str:
+                            setattr(new_cfg, key, str(value))
+                        else:
+                            setattr(new_cfg, key, value)
+                    except (ValueError, TypeError) as e:
+                        print(f"Warning: Could not convert {key}={value} to {current_type}: {e}")
+                        # 保持默认值
+                else:
+                    print(f"Warning: Unknown config key '{key}' in JSON file")
+
+            # 更新agent的配置
+            self.cfg = new_cfg
+
+            # 更新设备设置
+            if hasattr(self, 'device'):
+                self.device = torch.device(self.cfg.device)
+                # 将网络移到新设备
+                self.online = self.online.to(self.device)
+                self.target = self.target.to(self.device)
+
+            print(f"[Info] Config loaded from {path}")
+            print(f"[Info] New config: {self.cfg.__dict__}")
+
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON format in {path}: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to load config from {path}: {e}")

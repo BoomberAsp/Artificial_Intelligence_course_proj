@@ -17,9 +17,10 @@ from agents.cartpole_dqn import DQNConfig, DQNSolver
 
 
 class HyperparamTuner:
-    def __init__(self, algorithm: str):
+    def __init__(self, algorithm: str, use_early_stopping: bool = True):
         self.algorithm = algorithm
         self.results = []
+        self.use_early_stopping = use_early_stopping  # 控制是否启用早停
 
     def define_search_space(self) -> Dict[str, tuple]:
         """定义每个超参数的采样范围"""
@@ -145,16 +146,58 @@ class HyperparamTuner:
 
         return df
 
+    # def save_progress(self):
+    #     """定期保存进度，防止中断"""
+    #     progress_file = f"output/param_tuning_progress/tuning_progress_{self.algorithm}.json"
+    #
+    #     if not os.path.exists(progress_file):  # 如果路径不存在，创建路径
+    #
+    #         os.makedirs("output/param_tuning_progress", exist_ok=True)
+    #
+    #     with open(progress_file, 'w') as f:
+    #         json.dump(self.results, f, indent=2)
+
     def save_progress(self):
-        """定期保存进度，防止中断"""
+        """定期保存进度，防止中断 - 修复版本"""
         progress_file = f"output/param_tuning_progress/tuning_progress_{self.algorithm}.json"
 
-        if not os.path.exists(progress_file):  # 如果路径不存在，创建路径
+        if not os.path.exists(os.path.dirname(progress_file)):
+            os.makedirs(os.path.dirname(progress_file))
 
-            os.makedirs("output/param_tuning_progress", exist_ok=True)
+        try:
+            # 转换所有结果为可序列化格式
+            serializable_results = []
+            for result in self.results:
+                serializable_results.append(
+                    self._convert_to_serializable(result)
+                )
 
-        with open(progress_file, 'w') as f:
-            json.dump(self.results, f, indent=2)
+            with open(progress_file, 'w', encoding='utf-8') as f:
+                json.dump(serializable_results, f, indent=2, ensure_ascii=False)
+
+            # 可选：同时保存一个备份
+            backup_file = f"output/param_tuning_progress/tuning_progress_{self.algorithm}_backup.json"
+            with open(backup_file, 'w', encoding='utf-8') as f:
+                json.dump(serializable_results, f, indent=2, ensure_ascii=False)
+
+        except Exception as e:
+            print(f"Warning: Failed to save progress: {e}")
+            # 尝试保存简化版本
+            try:
+                simplified_results = []
+                for result in self.results:
+                    simplified = {
+                        'trial_id': int(result.get('trial_id', 0)),
+                        'avg_score': float(result.get('avg_score', 0.0)),
+                        'success': bool(result.get('success', False))
+                    }
+                    simplified_results.append(simplified)
+
+                with open(progress_file + '.simple', 'w', encoding='utf-8') as f:
+                    json.dump(simplified_results, f, indent=2)
+            except:
+                pass
+
 
     def analyze_results(self, df: pd.DataFrame):
         """分析并可视化结果"""
@@ -280,7 +323,9 @@ class HyperparamTuner:
             plt.show()
 
     def run_search_parallel(self, n_trials: int = 30, num_episodes: int = 200,
-                            max_workers: int = None, use_gpu: bool = False) -> pd.DataFrame:
+                            max_workers: int = None, use_gpu: bool = False,
+                            early_stop_patience: int = 20,
+                            early_stop_min_episodes: int = 50) -> pd.DataFrame:
         """
         并行运行超参数搜索
 
@@ -289,6 +334,7 @@ class HyperparamTuner:
             num_episodes: 每个试验的训练回合数
             max_workers: 最大工作进程数（默认使用CPU核心数-1）
             use_gpu: 是否使用GPU（注意：多个进程共享GPU可能造成内存冲突）
+
         """
         if max_workers is None:
             max_workers = max(1, multiprocessing.cpu_count() - 1)
@@ -309,7 +355,9 @@ class HyperparamTuner:
                 "trial_id": i,
                 "params": params,
                 "num_episodes": num_episodes,
-                "use_gpu": use_gpu
+                "use_gpu": use_gpu,
+                "early_stop_patience": early_stop_patience,
+                "early_stop_min_episodes": early_stop_min_episodes
             })
 
         results = []
@@ -317,7 +365,6 @@ class HyperparamTuner:
 
         # 使用进程池并行执行
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            # 提交所有任务
             future_to_trial = {}
             for trial in all_trials:
                 future = executor.submit(
@@ -325,7 +372,9 @@ class HyperparamTuner:
                     trial["trial_id"],
                     trial["params"],
                     trial["num_episodes"],
-                    trial["use_gpu"]
+                    trial["use_gpu"],
+                    trial["early_stop_patience"],
+                    trial["early_stop_min_episodes"]
                 )
                 future_to_trial[future] = trial["trial_id"]
 
@@ -370,9 +419,11 @@ class HyperparamTuner:
 
         return df
 
-
+    @staticmethod
     def _run_single_trial_parallel(self, trial_id: int, params: Dict,
-                                   num_episodes: int, use_gpu: bool) -> Dict:
+                                   num_episodes: int, use_gpu: bool,
+                                   early_stop_patience: int = 20,
+                                   early_stop_min_episodes: int = 50) -> Dict:
         """
         在独立进程中运行单个试验
 
@@ -418,68 +469,102 @@ class HyperparamTuner:
                 device=device
             )
 
-            # 创建环境和智能体
+            # 创建环境
             env = gym.make("CartPole-v1")
-            obs_dim = env.observation_space.shape[0]
-            act_dim = env.action_space.n
-            agent = DQNSolver(obs_dim, act_dim, cfg=config)
 
-            # 训练循环
-            scores = []
-            for ep in range(1, num_episodes + 1):
-                state, _ = env.reset(seed=seed + ep)
-                state = np.reshape(state, (1, obs_dim))
-                steps = 0
+            if self.use_early_stopping:
+                # 使用带有早停机制的训练函数
+                agent, scores = train_with_early_stopping(
+                    config=config,
+                    env=env,
+                    min_episodes=early_stop_min_episodes,
+                    patience=early_stop_patience,
+                    num_episodes=num_episodes  # 作为最大上限
+                )
+                actual_episodes_trained = len(scores)
 
-                while True:
-                    action = agent.act(state)
-                    next_state_raw, reward, terminated, truncated, _ = env.step(action)
-                    done = terminated or truncated
-                    next_state = np.reshape(next_state_raw, (1, obs_dim))
+                # 计算平均分数（取最后10个episode或全部）
+                if len(scores) >= 10:
+                    avg_score = np.mean(scores[-10:])
+                else:
+                    avg_score = np.mean(scores) if scores else 0
 
-                    agent.step(state, action, reward, next_state, done)
-                    state = next_state
-                    steps += 1
+                # 检查是否提前停止
+                early_stopped = actual_episodes_trained < num_episodes
+                stop_reason = "early_stopped" if early_stopped else "completed"
 
-                    if done:
-                        scores.append(steps)
-                        break
+            else:
+                # 原有的训练逻辑（作为备选）
+                obs_dim = env.observation_space.shape[0]
+                act_dim = env.action_space.n
+                agent = DQNSolver(obs_dim, act_dim, cfg=config)
+                scores = []
+
+                for ep in range(1, num_episodes + 1):
+                    state, _ = env.reset(seed=seed + ep)
+                    state = np.reshape(state, (1, obs_dim))
+                    steps = 0
+
+                    while True:
+                        action = agent.act(state)
+                        next_state_raw, reward, terminated, truncated, _ = env.step(action)
+                        done = terminated or truncated
+                        next_state = np.reshape(next_state_raw, (1, obs_dim))
+
+                        agent.step(state, action, reward, next_state, done)
+                        state = next_state
+                        steps += 1
+
+                        if done:
+                            scores.append(steps)
+                            break
+
+                actual_episodes_trained = num_episodes
+                avg_score = np.mean(scores[-10:]) if len(scores) >= 10 else np.mean(scores)
+                early_stopped = False
+                stop_reason = "completed"
 
             env.close()
 
-            # 计算平均分数（取最后10个episode的平均）
-            if len(scores) >= 10:
-                avg_score = np.mean(scores[-10:])
-            else:
-                avg_score = np.mean(scores) if scores else 0
-
-            # 返回结果
+            # 构建结果字典，确保类型可序列化
             result = {
-                "trial_id": trial_id,
+                "trial_id": int(trial_id),
                 **params,
-                "avg_score": avg_score,
-                "final_scores": scores[-5:] if len(scores) >= 5 else scores,
-                "total_episodes": len(scores),
-                "device_used": device,
+                "avg_score": float(avg_score),
+                "final_scores": [int(s) for s in scores[-5:]] if len(scores) >= 5 else [int(s) for s in scores],
+                "total_episodes": int(actual_episodes_trained),
+                "max_episodes": int(num_episodes),
+                "early_stopped": bool(early_stopped),
+                "stop_reason": str(stop_reason),
+                "device_used": str(device),
                 "success": True,
-                "seed": seed
+                "seed": int(seed)
             }
+
+            # 额外信息：如果早停，记录停止时的表现趋势
+            if early_stopped and len(scores) >= 10:
+                last_5 = np.mean(scores[-5:])
+                first_5 = np.mean(scores[:5])
+                result["improvement_ratio"] = float(last_5 / first_5) if first_5 > 0 else 0.0
 
             return result
 
         except Exception as e:
-            # 捕获并返回错误信息
-            error_msg = f"Trial {trial_id} error: {str(e)}"
+            # 错误结果也要确保可序列化
+            error_msg = f"Trial {trial_id} error: {str(e)[:200]}"
             return {
-                "trial_id": trial_id,
-                **params,
-                "avg_score": 0,
+                "trial_id": int(trial_id),
+                **{k: (int(v) if isinstance(v, np.integer) else
+                       float(v) if isinstance(v, np.floating) else v)
+                   for k, v in params.items()},
+                "avg_score": 0.0,
                 "success": False,
                 "error": error_msg,
-                "device_used": device
+                "device_used": "unknown"
             }
 
 
+    @staticmethod
     def _create_output_dirs(self):
         """创建所有必要的输出目录"""
         dirs = [
@@ -499,6 +584,59 @@ class HyperparamTuner:
     #     """原有的串行搜索方法"""
     #     print(f"Starting sequential hyperparameter search for {self.algorithm}")
     #     return super().run_search(n_trials, num_episodes)
+
+
+    @staticmethod
+    def _convert_to_serializable(obj):
+        """
+        将对象转换为JSON可序列化的格式
+        处理NumPy类型、Pandas类型以及其他常见非序列化类型
+        """
+        import numpy as np
+        import pandas as pd
+
+        # 处理NumPy整数类型
+        if isinstance(obj, (np.integer, np.int8, np.int16, np.int32, np.int64)):
+            return int(obj)
+
+        # 处理NumPy浮点数类型
+        if isinstance(obj, (np.floating, np.float16, np.float32, np.float64)):
+            return float(obj)
+
+        # 处理NumPy布尔类型
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+
+        # 处理NumPy数组
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+
+        # 处理Pandas Series和DataFrame
+        if isinstance(obj, pd.Series):
+            return obj.tolist()
+        if isinstance(obj, pd.DataFrame):
+            return obj.to_dict(orient='records')
+
+        # 处理字典（递归转换值）
+        if isinstance(obj, dict):
+            return {k: HyperparamTuner._convert_to_serializable(v) for k, v in obj.items()}
+
+        # 处理列表、元组（递归转换元素）
+        if isinstance(obj, (list, tuple, set)):
+            return [HyperparamTuner._convert_to_serializable(item) for item in obj]
+
+        # 处理None
+        if obj is None:
+            return None
+
+        # 对于其他类型，尝试直接返回，如果出错则转为字符串
+        try:
+            # 测试是否可JSON序列化
+            json.dumps(obj)
+            return obj
+        except (TypeError, OverflowError):
+            # 无法序列化则转为字符串表示
+            return str(obj)
 
 
     # 修改train.py，使其能接受外部配置
@@ -521,9 +659,10 @@ class HyperparamTuner:
 #     return best_score
 
 
-def train_with_early_stopping(config, env, min_episodes=50, patience=20, num_episodes=200):
-    """带有早停机制的训练函数"""
-    # 创建agent
+def train_with_early_stopping(config, env, min_episodes=50, patience=20, num_episodes=200, verbose=False):
+    """
+    带有早停机制的训练函数（优化版）
+    """
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.n
     agent = DQNSolver(obs_dim, act_dim, cfg=config)
@@ -531,10 +670,11 @@ def train_with_early_stopping(config, env, min_episodes=50, patience=20, num_epi
     best_score = -float('inf')
     no_improve = 0
     scores = []
+    best_episode = 0
 
     for episode in range(1, num_episodes + 1):
         # 重置环境
-        state, _ = env.reset(seed=episode)
+        state, _ = env.reset(seed=episode + config.seed if hasattr(config, 'seed') else episode)
         state = np.reshape(state, (1, obs_dim))
         steps = 0
 
@@ -555,19 +695,32 @@ def train_with_early_stopping(config, env, min_episodes=50, patience=20, num_epi
 
         # 检查早停条件
         if episode >= min_episodes:
-            recent_avg = np.mean(scores[-10:]) if len(scores) >= 10 else scores[-1]
+            # 使用滑动窗口平均来减少波动影响
+            window_size = min(10, len(scores))
+            recent_avg = np.mean(scores[-window_size:])
 
             if recent_avg > best_score:
                 best_score = recent_avg
+                best_episode = episode
                 no_improve = 0
+                if verbose:
+                    print(f"  Episode {episode}: New best avg ({recent_avg:.1f})")
             else:
                 no_improve += 1
 
+            # 早停条件：连续patience个episode没有改善
             if no_improve >= patience:
-                print(f"Early stopping at episode {episode}")
+                if verbose:
+                    print(f"  Early stopping at episode {episode}, "
+                          f"best was {best_score:.1f} at episode {best_episode}")
                 break
 
-    env.close()
+            # 可选：如果分数已经达到很高，也可以提前停止
+            if recent_avg >= 495 and episode >= 100:  # CartPole接近完美
+                if verbose:
+                    print(f"  Early stopping: near-perfect performance ({recent_avg:.1f})")
+                break
+
     return agent, scores
 
 
@@ -605,6 +758,9 @@ def analyze_results_from_file(csv_path: str):
         for col in param_cols:
             if col in best_row:
                 print(f"  {col}: {best_row[col]}")
+
+        score_over_475 = df[df['avg_score'] >= 475]
+        score_over_475.to_csv(csv_path.replace('.csv', '_over_475.csv'))
 
 
 def main():

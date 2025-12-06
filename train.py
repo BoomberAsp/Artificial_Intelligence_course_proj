@@ -31,7 +31,7 @@ TS = (str(time.localtime().tm_mon)+"m"
 MODEL_PATH = os.path.join(MODEL_DIR, f"cartpole_dqn_{TS}.torch")
 
 
-def train_dqn(num_episodes: int = 200, terminal_penalty: bool = True, save_path = MODEL_PATH, saved = True) -> DQNSolver:
+def train_dqn(num_episodes: int = 200, terminal_penalty: bool = True, save_path = MODEL_PATH, saved = True, config_path = None) -> DQNSolver:
     """
     Main training loop:
       - Creates the environment and agent
@@ -55,6 +55,9 @@ def train_dqn(num_episodes: int = 200, terminal_penalty: bool = True, save_path 
 
     # Construct agent with default config (students can swap configs here)
     agent = DQNSolver(obs_dim, act_dim, cfg=DQNConfig())
+    if config_path:
+        agent.load_config(config_path)
+
     print(f"[Info] Using device: {agent.device}")
 
     # Episode loop
@@ -251,5 +254,5 @@ def evaluate_dqn(model_path: str | None = None,
 
 if __name__ == "__main__":
     # Example: quick training then a short evaluation
-    agent = train_dqn(num_episodes=500, terminal_penalty=True)
+    agent = train_dqn(num_episodes=300, terminal_penalty=True, config_path="output/best_config/best_config_dqn_parallel.json")
     evaluate_dqn(model_path=f"models/cartpole_dqn_{TS}.torch", algorithm="dqn", episodes=100, render=False, fps=60)
