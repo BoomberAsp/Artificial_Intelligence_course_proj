@@ -1,3 +1,8 @@
+"""
+Docstring for Artificial_Intelligence_course_proj.hyperparameter_finding
+直接翻到最后面看main怎么用。
+有两个TODO
+"""
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
@@ -42,7 +47,9 @@ class HyperparamTuner:
                 "clip_epsilon": (0.1, 0.3, 'uniform'),
                 "entropy_coef": (0.01, 0.1, 'uniform')
             }
+            # TODO: add other parameter you want to adjust, you can ask the range from ds/gpt
         }
+        
         return spaces.get(self.algorithm, {})
 
     def sample_params(self) -> Dict[str, Any]:
@@ -77,6 +84,8 @@ class HyperparamTuner:
                 initial_exploration=params.get('initial_exploration', 1000)
             )
         # 未来可以添加其他算法的配置创建
+        # TODO:
+        # elif self.algorithm == "":
         raise ValueError(f"Unsupported algorithm: {self.algorithm}")
 
 
@@ -359,6 +368,7 @@ class HyperparamTuner:
 
         # 准备所有试验的参数
         all_trials = []
+        
         for i in range(n_trials):
             params = self.sample_params()
             all_trials.append({
@@ -472,6 +482,7 @@ class HyperparamTuner:
 
         try:
             # 创建配置
+            # TODO: 根据agent名称，配置config                
             config = DQNConfig(
                 gamma=params.get('gamma', 0.99),
                 lr=params.get('learning_rate', 1e-3),

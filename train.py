@@ -20,6 +20,8 @@ import torch
 import time
 
 from agents.cartpole_dqn import DQNSolver, DQNConfig
+from agents.cartpole_ac import ACSolver, ACConfig
+
 from scores.score_logger import ScoreLogger
 
 ENV_NAME = "CartPole-v1"
@@ -106,10 +108,83 @@ def train_dqn(num_episodes: int = 200, terminal_penalty: bool = True, save_path 
         print(f"[Train] Model saved to {save_path}")
     return agent
 
+def train_ac(num_episodes: int = 200, terminal_penalty: bool = True, save_path = MODEL_PATH, saved = True, config_path = None) -> ACSolver:
+    """
+    Main training loop:
+      - Creates the environment and agent
+      - For each episode:
+          * Reset env → get initial state
+          * Loop: select action, step environment, call agent.step()
+          * Log episode score with ScoreLogger
+      - Saves the trained model to disk
+    """
 
-def train_episode_dqn(agent, env) -> DQNSolver:
-    # TODO: 实现单个episode的训练逻辑
-    pass
+    if saved:
+        os.makedirs(MODEL_DIR, exist_ok=True)
+
+    # Create CartPole environment (no render during training for speed)
+    env = gym.make(ENV_NAME)
+    logger = ScoreLogger(ENV_NAME)
+
+    # Infer observation/action dimensions from the env spaces
+    obs_dim = env.observation_space.shape[0]
+    act_dim = env.action_space.n
+
+    # Construct agent with default config (students can swap configs here)
+    agent = ACSolver(obs_dim, act_dim, cfg=ACConfig())
+    if config_path:
+        agent.load_config(config_path)
+
+    print(f"[Info] Using device: {agent.device}")
+
+    # Episode loop
+    for run in range(1, num_episodes + 1):
+        # Gymnasium reset returns (obs, info). Seed for repeatability.
+        state, info = env.reset(seed=run)
+        state = np.reshape(state, (1, obs_dim))
+        steps = 0
+
+        while True:
+            steps += 1
+
+            # 1. ε-greedy action from the agent (training mode)
+            #    state shape is [1, obs_dim]
+            action = agent.act(state)
+
+            # 2. Gymnasium step returns: obs', reward, terminated, truncated, info
+            next_state_raw, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+
+            # 3. Optional small terminal penalty (encourage agent to avoid failure)
+            if terminal_penalty and done:
+                reward = -1.0
+            
+            # 4. Reshape next_state for agent and next loop iteration
+            next_state = np.reshape(next_state_raw, (1, obs_dim))
+
+            # 5. Give (s, a, r, s', done) to the agent, which handles
+            #    remembering and learning internally.
+            agent.step(state, action, reward, next_state, done)
+
+            # 6. Move to next state
+            state = next_state
+
+            # 7. Episode end: log and break
+            if done:
+                print(f"Run: {run}, Score: {steps}")
+                logger.add_score(steps, run)  # writes CSV + updates score PNG
+                break
+
+    env.close()
+    # Persist the trained model
+    if saved:
+        agent.save(save_path)
+        print(f"[Train] Model saved to {save_path}")
+    return agent
+
+# def train_episode_dqn(agent, env) -> DQNSolver:
+#     # TODO: 实现单个episode的训练逻辑
+#     pass
 
 
 def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, float]:
@@ -118,39 +193,59 @@ def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, 
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.n
     agent = None
+    description = ""
+    save_path = ""
     if isinstance(config, DQNConfig):
         agent = DQNSolver(obs_dim, act_dim, cfg=config)
-    # elif isinstance(config, ...):
+        if save:  # 如果要保存模型
+            os.makedirs(MODEL_DIR, exist_ok=True)
+            print(f"[Info] Using device: {agent.device}")
+            params = [
+                str(config.gamma),
+                str(config.lr),
+                str(config.batch_size),
+                str(config.memory_size),
+                str(config.initial_exploration),
+                str(config.eps_start),
+                str(config.eps_end),
+                str(config.eps_decay),
+                str(config.target_update)
+            ]
+            description = "_".join(params)  # 加在文件名后用于找寻超参组合
+            save_path = MODEL_DIR
+    elif isinstance(config, ACConfig):
+        agent = ACConfig(obs_dim,act_dim, cfg=config)
+        if save:  # 如果要保存模型
+            os.makedirs(MODEL_DIR, exist_ok=True)
+            print(f"[Info] Using device: {agent.device}")
+            params = [
+                str(config.gamma),
+                str(config.lr),
+                str(config.batch_size),
+                str(config.memory_size),
+                str(config.value_coef),
+                str(config.entropy_coef)
+            ]
+            description = "_".join(params)  # 加在文件名后用于找寻超参组合
+            save_path = MODEL_DIR
     # TODO:实现其它agent时需要添加，用于调取对应的agent
+    
 
     # =======================================
 
-    discription = ""
-    save_path = ""
-    if save:  # 如果要保存模型
-        os.makedirs(MODEL_DIR, exist_ok=True)
-        print(f"[Info] Using device: {agent.device}")
-        params = [
-            str(config.gamma),
-            str(config.lr),
-            str(config.batch_size),
-            str(config.memory_size),
-            str(config.initial_exploration),
-            str(config.eps_start),
-            str(config.eps_end),
-            str(config.eps_decay),
-            str(config.target_update)
-        ]
-        discription = "_".join(params)  # 加在文件名后用于找寻超参组合
-        save_path = MODEL_DIR
+
+    
 
     # ==========训练、评估逻辑==========
     avg_score = 0.0
     if isinstance(agent, DQNSolver):
         agent = train_dqn(num_episodes=num_episodes,
-                          saved=save, save_path=os.path.join(save_path, f"cartpole_dqn_{discription}.torch"))
+                          saved=save, save_path=os.path.join(save_path, f"cartpole_dqn_{description}.torch"))
         scores, avg_score = evaluate_dqn(algorithm="dqn", episodes=100, render=False, if_agent=True, agent=agent)
-    # elif isinstance(agent, ...):
+    elif isinstance(agent, ...):
+        agent = train_dqn(num_episodes=num_episodes,
+                          saved=save, save_path=os.path.join(save_path, f"cartpole_ac_{description}.torch"))
+        scores, avg_score = evaluate_dqn(algorithm="ac", episodes=100, render=False, if_agent=True, agent=agent)
     # TODO:实现其它agent时需要添加，用于调取对应的训练函数与评估函数
     # ================================
     if not agent:
