@@ -21,6 +21,7 @@ import time
 
 from agents.cartpole_dqn import DQNSolver, DQNConfig
 from agents.cartpole_ac import ACSolver, ACConfig
+from agents.cartpole_ppo import PPOSolver, PPOConfig
 
 from scores.score_logger import ScoreLogger
 
@@ -31,7 +32,7 @@ TS = (str(time.localtime().tm_mon)+"m"
       + str(time.localtime().tm_hour)+"h"
       + str(time.localtime().tm_min)+"min")
 
-MODEL_PATH = os.path.join(MODEL_DIR, f"cartpole_dqn_{TS}.torch")
+MODEL_PATH = os.path.join(MODEL_DIR, f"cartpole_ppo_{TS}.torch")
 
 
 def train_dqn(num_episodes: int = 200, terminal_penalty: bool = True, save_path = MODEL_PATH, saved = True, config_path = None) -> DQNSolver:
@@ -108,7 +109,7 @@ def train_dqn(num_episodes: int = 200, terminal_penalty: bool = True, save_path 
         print(f"[Train] Model saved to {save_path}")
     return agent
 
-def train_ac(num_episodes: int = 200, terminal_penalty: bool = True, save_path = MODEL_PATH, saved = True, config_path = None) -> ACSolver:
+def train_ppo(num_episodes: int = 200, terminal_penalty: bool = True, save_path = MODEL_PATH, saved = True, config_path = None) -> PPOSolver:
     """
     Main training loop:
       - Creates the environment and agent
@@ -118,7 +119,7 @@ def train_ac(num_episodes: int = 200, terminal_penalty: bool = True, save_path =
           * Log episode score with ScoreLogger
       - Saves the trained model to disk
     """
-
+    print("start ppo training")
     if saved:
         os.makedirs(MODEL_DIR, exist_ok=True)
 
@@ -131,7 +132,7 @@ def train_ac(num_episodes: int = 200, terminal_penalty: bool = True, save_path =
     act_dim = env.action_space.n
 
     # Construct agent with default config (students can swap configs here)
-    agent = ACSolver(obs_dim, act_dim, cfg=ACConfig())
+    agent = PPOSolver(obs_dim, act_dim, cfg=PPOConfig())
     if config_path:
         agent.load_config(config_path)
 
@@ -162,9 +163,9 @@ def train_ac(num_episodes: int = 200, terminal_penalty: bool = True, save_path =
             # 4. Reshape next_state for agent and next loop iteration
             next_state = np.reshape(next_state_raw, (1, obs_dim))
 
-            # 5. Give (s, a, r, s', done) to the agent, which handles
+            # 5. Give (s, a, r, done, logp?) to the agent, which handles
             #    remembering and learning internally.
-            agent.step(state, action, reward, next_state, done)
+            agent.step(state, action, reward, done)
 
             # 6. Move to next state
             state = next_state
@@ -228,6 +229,24 @@ def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, 
             ]
             description = "_".join(params)  # 加在文件名后用于找寻超参组合
             save_path = MODEL_DIR
+    elif isinstance(config, PPOConfig):
+        agent = PPOSolver(obs_dim,act_dim, cfg=config)
+        if save:  # 如果要保存模型
+            os.makedirs(MODEL_DIR, exist_ok=True)
+            print(f"[Info] Using device: {agent.device}")
+            params = [
+                str(config.gamma),
+                str(config.lr),
+                str(config.memory_size),
+                str(config.value_coef),
+                str(config.entropy_coef),
+                str(config.clip_eps),
+                str(config.lambda_gae),
+                str(config.minibatch_size),
+                str(config.epoch),
+            ]
+            description = "_".join(params)  # 加在文件名后用于找寻超参组合
+            save_path = MODEL_DIR
     # TODO:实现其它agent时需要添加，用于调取对应的agent
     
 
@@ -241,11 +260,15 @@ def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, 
     if isinstance(agent, DQNSolver):
         agent = train_dqn(num_episodes=num_episodes,
                           saved=save, save_path=os.path.join(save_path, f"cartpole_dqn_{description}.torch"))
-        scores, avg_score = evaluate_dqn(algorithm="dqn", episodes=100, render=False, if_agent=True, agent=agent)
+        scores, avg_score = evaluate_agent(algorithm="dqn", episodes=100, render=False, if_agent=True, agent=agent)
+    elif isinstance(agent, PPOSolver):
+        agent = train_ppo(num_episodes=num_episodes,
+                          saved=save, save_path=os.path.join(save_path, f"cartpole_ppo_{description}.torch"))
+        scores, avg_score = evaluate_agent(algorithm="ac", episodes=100, render=False, if_agent=True, agent=agent)
     elif isinstance(agent, ...):
         agent = train_dqn(num_episodes=num_episodes,
                           saved=save, save_path=os.path.join(save_path, f"cartpole_ac_{description}.torch"))
-        scores, avg_score = evaluate_dqn(algorithm="ac", episodes=100, render=False, if_agent=True, agent=agent)
+        scores, avg_score = evaluate_agent(algorithm="ac", episodes=100, render=False, if_agent=True, agent=agent)
     # TODO:实现其它agent时需要添加，用于调取对应的训练函数与评估函数
     # ================================
     if not agent:
@@ -256,7 +279,7 @@ def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, 
     return agent, avg_score
 
 
-def evaluate_dqn(model_path: str | None = None,
+def evaluate_agent(model_path: str | None = None,
                  algorithm: str = "dqn",
                  episodes: int = 5,
                  render: bool = True,
@@ -296,13 +319,17 @@ def evaluate_dqn(model_path: str | None = None,
 
         # Create env for evaluation; 'human' enables pygame-based rendering
         render_mode = "human" if render else None
-        env = gym.make(ENV_NAME, render_mode=render_mode)
-        obs_dim = env.observation_space.shape[0]
-        act_dim = env.action_space.n
+        
+        tmp_env = gym.make(ENV_NAME)
+        obs_dim = tmp_env.observation_space.shape[0]
+        act_dim = tmp_env.action_space.n
+        tmp_env.close()
 
-        # (If you add PPO/A2C later, pick their agent classes by 'algorithm' here.)
+        # TODO: (If you add PPO/A2C later, pick their agent classes by 'algorithm' here.)
         if algorithm.lower() == "dqn":
             agent = DQNSolver(obs_dim, act_dim, cfg=DQNConfig())
+        if algorithm.lower() == "ppo":
+            agent = PPOSolver(obs_dim, act_dim, cfg=PPOConfig())
         else:
             raise ValueError(...)
 
@@ -319,6 +346,11 @@ def evaluate_dqn(model_path: str | None = None,
     # Sleep interval to approximate fps; set 0 for fastest evaluation
     dt = (1.0 / fps) if render and fps else 0.0
 
+    # 2) 这里统一创建正式用来评估的 env
+    render_mode = "human" if render else None
+    env = gym.make(ENV_NAME, render_mode=render_mode)
+    obs_dim = env.observation_space.shape[0]
+    
     for ep in range(1, episodes + 1):
         state, _ = env.reset(seed=10_000 + ep)
         state = np.reshape(state, (1, obs_dim))
@@ -348,10 +380,13 @@ def evaluate_dqn(model_path: str | None = None,
     return scores, avg
 
 
+
+
 if __name__ == "__main__":
     # Example: quick training then a short evaluation
     # random.seed(917808)
     # np.random.seed(917808)
     # torch.manual_seed(917808)
-    agent = train_dqn(num_episodes=1000, terminal_penalty=True, config_path="output/best_config/Best_of_the_best_config_dqn_parallel_earlystop_12m6d16h37min.json")
-    evaluate_dqn(model_path=f"models/cartpole_dqn_{TS}.torch", algorithm="dqn", episodes=100, render=False, fps=60)
+    # 
+    agent = train_ppo(num_episodes=1000, terminal_penalty=True)
+    evaluate_agent(model_path=f"models/cartpole_ppo_{TS}.torch", algorithm="ppo", episodes=100, render=True, fps=60)
