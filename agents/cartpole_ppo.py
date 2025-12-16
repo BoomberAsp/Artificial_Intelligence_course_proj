@@ -25,16 +25,15 @@ from pathlib import Path
 # PPO-specific Hyperparameters
 # -----------------------------
 GAMMA = 0.99             # reward discount in TD error
-VALUE_COEF = 0.5        # critic loss 权重
-ENTROPY_COEF = 3e-4     # 熵正则，鼓励探索
-LR = 0.001              # learning rate for critic
+VALUE_COEF = 0.54        # critic loss 权重
+ENTROPY_COEF = 0.002     # 熵正则，鼓励探索
+LR = 0.00015              # learning rate for critic
 LAMBDA_GAE = 0.95       # GAE的指数加权平均，用来平衡：0等价TD(0)，1等价Monte Carlo
 CLIP_EPS = 0.2        # clip参数，用来限制跨度太大的参数变化
 # --------取样训练-------
-MEMORY_SIZE = 512       # 单次获得的数据批量
+MEMORY_SIZE = 32       # 单次获得的数据批量
 MINIBATCH_SIZE = 64     # 每次从batch里面找多长的sub序列
 EPOCH = 16              # 从堆里面取多少次
-
 
 
 
@@ -128,9 +127,9 @@ class PPOConfig:
     entropy_coef : float = ENTROPY_COEF    # 熵正则，鼓励探索
     clip_eps : float = CLIP_EPS
     lambda_gae : float = LAMBDA_GAE
-    memory_size : int = MEMORY_SIZE
-    minibatch_size: int = MINIBATCH_SIZE
-    epoch : int = EPOCH
+    memory_size : int = MEMORY_SIZE # 多少批训练一次
+    minibatch_size: int = MINIBATCH_SIZE # 每次从数据中取出的轨迹长度
+    epoch : int = EPOCH # 每次取多少条
     # max_grad_norm: float = MAX_GRAD_NORM
     
     # Auto-select CUDA if available; CPU is perfectly fine for CartPole

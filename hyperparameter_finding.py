@@ -33,7 +33,7 @@ class HyperparamTuner:
         """定义每个超参数的采样范围"""
         spaces = {
             "dqn": {
-                "learning_rate": ((1e-4, 1e-2), 'log'),  # 元组包裹
+                "learning_rate": ((1e-4, 1e-2), 'log'),
                 "gamma": ((0.9, 0.999), 'uniform'),
                 "batch_size": ([16, 32, 64, 128], 'choice'),
                 "memory_size": ((10000, 100000), 'int'),
@@ -41,41 +41,55 @@ class HyperparamTuner:
                 "eps_start": ((0.9, 1.0), 'uniform'),
                 "eps_end": ((0.01, 0.1), 'uniform'),
                 "eps_decay": ((0.99, 0.999), 'uniform'),
-                "initial_exploration": ((500, 2000), 'int')
-        },
+                "initial_exploration": ((500, 2000), 'int'),
+            },
             "ppo": {
-                "learning_rate": ((1e-4, 3e-4), 'log'),      # 建议用 log 采样
+                "learning_rate": ((1e-4, 3e-4), 'log'),
                 "gamma": ((0.9, 0.999), 'uniform'),
                 "value_coef": ((0.25, 1.0), 'uniform'),
                 "entropy_coef": ((1e-4, 1e-2), 'log'),
                 "lambda_gae": ((0.9, 0.98), 'uniform'),
                 "clip_eps": ((0.1, 0.3), 'uniform'),
-                "minibatch_size": ([512, 256, 128, 64, 32], 'choice'),
-                "epoch": ([16, 32, 64, 128], 'choice'),
-                # 如果你想调 memory_size，可以再加一项
-                # "memory_size": ((4096, 32768), 'int'),
-            }
 
-            # TODO: add other parameter you want to adjust, you can ask the range from ds/gpt
+                # 这三个就是你要联合探索的 rollout 超参数
+                # 这里用离散的典型取值，组合出来就会有 (2048, 64, 16) 这一类
+                "memory_size": ([1024, 2048, 4096, 8192], 'choice'),
+                "minibatch_size": ([32, 64, 128, 256], 'choice'),
+                "epoch": ([4, 8, 16, 32], 'choice'),
+            }
+            # TODO: add other parameter you want to adjust
         }
-        
+
         return spaces.get(self.algorithm, {})
 
     def sample_params(self) -> Dict[str, Any]:
         """根据搜索空间随机采样一组参数"""
         space = self.define_search_space()
-        params = {}
-        for name, (range_val, sampling) in space.items():
-                
-            if sampling == 'log':
-                params[name] = 10 ** np.random.uniform(np.log10(range_val[0]),
-                                                        np.log10(range_val[1]))
-            elif sampling == 'uniform':
-                params[name] = np.random.uniform(range_val[0], range_val[1])
-            elif sampling == 'choice':
-                params[name] = np.random.choice(range_val)
-            elif sampling == 'int':
-                params[name] = int(np.random.uniform(range_val[0], range_val[1]))
+        params: Dict[str, Any] = {}
+
+        while True:
+            params.clear()
+            for name, (range_val, sampling) in space.items():
+
+                if sampling == 'log':
+                    params[name] = 10 ** np.random.uniform(
+                        np.log10(range_val[0]),
+                        np.log10(range_val[1])
+                    )
+                elif sampling == 'uniform':
+                    params[name] = np.random.uniform(range_val[0], range_val[1])
+                elif sampling == 'choice':
+                    params[name] = np.random.choice(range_val)
+                elif sampling == 'int':
+                    params[name] = int(np.random.uniform(range_val[0], range_val[1]))
+
+            # 对 PPO 做一个简单约束：memory_size 至少是 minibatch_size 的 4 倍，
+            # 避免 batch 太少，训练不稳定
+            if self.algorithm == "ppo":
+                if params["memory_size"] < 4 * params["minibatch_size"]:
+                    continue  # 不满足约束就重新采样一组
+            break
+
         return params
 
 
@@ -544,7 +558,7 @@ class HyperparamTuner:
                     lr=params.get('learning_rate', 1e-3),
                     lambda_gae=params.get('lambda_gae', 0.95),
                     clip_eps=params.get('clip_eps', 0.2),
-                    memory_size=params.get('memory_size', 8196),
+                    memory_size=params.get('memory_size', 4096),
                     minibatch_size=params.get('minibatch_size', 512),
                     epoch=params.get('epoch', 16),
                     device=device,
@@ -988,7 +1002,7 @@ def main():
             mode = "parallel" if args.parallel or args.early_stop else "sequential"
             early_stop_str = "_earlystop" if args.early_stop else ""
             best_config_file = f"output/best_config/best_config_{args.algorithm}_{mode}{early_stop_str}_{TS}.json"
-
+            
             # 添加早停参数到最佳配置中
             if args.early_stop:
                 best_params['early_stopping_patience'] = args.patience
