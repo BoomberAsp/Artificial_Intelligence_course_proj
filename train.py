@@ -35,7 +35,7 @@ TS = (str(time.localtime().tm_mon)+"m"
 MODEL_PATH = os.path.join(MODEL_DIR, f"cartpole_ppo_{TS}.torch")
 
 
-def train_dqn(num_episodes: int = 200, terminal_penalty: bool = True, save_path = MODEL_PATH, saved = True, config_path = None) -> DQNSolver:
+def train_dqn(num_episodes: int = 1024, terminal_penalty: bool = True, save_path = MODEL_PATH, saved = True, config_path = None) -> DQNSolver:
     """
     Main training loop:
       - Creates the environment and agent
@@ -384,9 +384,9 @@ def evaluate_agent(model_path: str | None = None,
 
 if __name__ == "__main__":
     # Example: quick training then a short evaluation
-    # random.seed(917808)
-    # np.random.seed(917808)
-    # torch.manual_seed(917808)
+    random.seed(89800)
+    np.random.seed(89800)
+    torch.manual_seed(89800)
     # 
-    agent = train_ppo(num_episodes=1000, terminal_penalty=True)
-    evaluate_agent(model_path=f"models/cartpole_ppo_{TS}.torch", algorithm="ppo", episodes=100, render=True, fps=60)
+    agent = train_ppo(num_episodes=128, terminal_penalty=True)
+    evaluate_agent(model_path=f"models/cartpole_ppo_{TS}.torch", algorithm="ppo", episodes=500, render=True, fps=60)

@@ -162,14 +162,33 @@ class PPOSolver:
         
         # Experience replay memory        
         self.memory = ReplayBuffer(self.cfg.memory_size)
-
-        # Global counters
-        self.steps = 0
         
         self._last_state = None
         self._last_action = None
         self._last_logp = None
         self._last_value = None
+        
+        self.steps = 0
+        self.update_idx = 0  # 第几轮 PPO 更新
+
+        # Global counters, 训练过程中的简单日志，方便画图
+        self.train_log = {
+            "update_idx": [],
+            "mean_return": [],
+            "lr": [],
+            "epoch": [],
+            "memory_size": [],
+            "minibatch_size": [],
+            "approx_kl": [],
+            "clip_fraction": [],
+        }
+
+        # 一些自适应的上下界，可以放在 cfg 里，也可以直接写死
+        self.cfg.lr_min = getattr(self.cfg, "lr_min", 1e-5)
+        self.cfg.lr_max = getattr(self.cfg, "lr_max", 3e-3)
+        self.cfg.epoch_min = getattr(self.cfg, "epoch_min", 4)
+        self.cfg.epoch_max = getattr(self.cfg, "epoch_max", 32)
+        self.cfg.kl_target = getattr(self.cfg, "kl_target", 0.01)
 
     # -----------------------------
     # Acting & memory
@@ -321,7 +340,7 @@ class PPOSolver:
                 loss.backward()
                 self.optim.step()
                 
-            
+    
         
 
     # -----------------------------
