@@ -236,7 +236,7 @@ def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, 
             print(f"[Info] Using device: {agent.device}")
             params = [
                 str(config.gamma),
-                str(config.lr),
+                str(config.learning_rate),
                 str(config.memory_size),
                 str(config.value_coef),
                 str(config.entropy_coef),

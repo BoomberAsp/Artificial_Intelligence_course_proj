@@ -27,11 +27,11 @@ from pathlib import Path
 GAMMA = 0.99             # reward discount in TD error
 VALUE_COEF = 0.54        # critic loss 权重
 ENTROPY_COEF = 0.002     # 熵正则，鼓励探索
-LR = 0.00015              # learning rate for critic
+LEARNING_RATE = 0.00015              # learning rate for critic
 LAMBDA_GAE = 0.95       # GAE的指数加权平均，用来平衡：0等价TD(0)，1等价Monte Carlo
 CLIP_EPS = 0.2        # clip参数，用来限制跨度太大的参数变化
 # --------取样训练-------
-MEMORY_SIZE = 32       # 单次获得的数据批量
+MEMORY_SIZE = 1024       # 单次获得的数据批量
 MINIBATCH_SIZE = 64     # 每次从batch里面找多长的sub序列
 EPOCH = 16              # 从堆里面取多少次
 
@@ -67,8 +67,8 @@ class ReplayBuffer:
     """
 
     def __init__(self, capacity: int):
-        self.capacity = capacity
-        self.buf: Deque[Tuple[np.ndarray, int, float, np.ndarray, float]] = deque(maxlen=capacity)
+        self.capacity = int(capacity)
+        self.buf: Deque[Tuple[np.ndarray, int, float, np.ndarray, float, float]] = deque(maxlen=capacity)
     # TODO[PPO]: 对 PPO 来说，这里更像是一个 "RolloutBuffer":
     #   - 不需要很大的 capacity 和随机采样，通常容量=cfg.rollout_steps
     #   - 每一轮只存当前策略下采样到的那一批 (s, a, r, done, logp_old, value)
@@ -116,12 +116,12 @@ class ReplayBuffer:
 class PPOConfig:
     """
     # class PPOConfig:
-    #   - gamma, lr, rollout_steps, update_epochs, minibatch_size
+    #   - gamma, learning_rate, rollout_steps, update_epochs, minibatch_size
     #   - clip_eps, value_coef, entropy_coef, lambda_gae
     #   - device 同样保留
 
     """
-    lr: float = LR
+    learning_rate: float = LEARNING_RATE
     gamma : float = GAMMA                    # reward discount in TD error
     value_coef : float = VALUE_COEF        # critic loss 权重
     entropy_coef : float = ENTROPY_COEF    # 熵正则，鼓励探索
@@ -158,7 +158,7 @@ class PPOSolver:
         self.net = ActorCritic(self.obs_dim, self.act_dim).to(self.device)
 
         # Optimizer over online network parameters
-        self.optim = optim.Adam(self.net.parameters(), lr=self.cfg.lr)
+        self.optim = optim.Adam(self.net.parameters(), lr=self.cfg.learning_rate)
         
         # Experience replay memory        
         self.memory = ReplayBuffer(self.cfg.memory_size)
@@ -175,7 +175,7 @@ class PPOSolver:
         self.train_log = {
             "update_idx": [],
             "mean_return": [],
-            "lr": [],
+            "learning_rate": [],
             "epoch": [],
             "memory_size": [],
             "minibatch_size": [],
@@ -236,7 +236,7 @@ class PPOSolver:
         self.remember(state, action, reward, done, self._last_logp, self._last_value)
         # self.steps += 1
         
-        if len(self.memory) > self.cfg.memory_size:
+        if len(self.memory) >= self.cfg.memory_size:
             self.experience_replay()
             self.memory.clear()
 
@@ -276,10 +276,11 @@ class PPOSolver:
             else:
                 next_value = value_t[t + 1]
 
-            delta = r_t[t] + m_t[t] * self.cfg.gamma * next_value - value_t[t]
-            gae = delta + self.cfg.gamma * self.cfg.lambda_gae * gae
+            delta = r_t[t] + self.cfg.gamma * next_value * m_t[t] - value_t[t]
+            gae = delta + self.cfg.gamma * self.cfg.lambda_gae * m_t[t] * gae
             A_t[t] = gae
             returns[t] = A_t[t] + value_t[t]
+
         
         # 对 advantage 标准化，有利于稳定训练
         A_t = (A_t - A_t.mean()) / (A_t.std() + 1e-8)
@@ -317,8 +318,8 @@ class PPOSolver:
 
                 ratio = torch.exp(logp - mb_logp_old)
                 
-                if not torch.isfinite(log_ratio).all():
-                    print("log_ratio NaN/Inf:", log_ratio)
+                if not torch.isfinite(ratio).all():
+                    print("log_ratio NaN/Inf:", ratio)
                     raise SystemExit
 
                 # PPO-clip
