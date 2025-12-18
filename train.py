@@ -465,13 +465,13 @@ if __name__ == "__main__":
     np.random.seed(89800)
     torch.manual_seed(89800)
 
-    # === 模式 1: 队友的 PPO ===
+    # === 模式 1:  PPO ===
     if args.mode == 'ppo':
         print("\n=== Running PPO Training (Teammate's Code) ===")
         agent = train_ppo(num_episodes=128, terminal_penalty=True)
         evaluate_agent(model_path=f"models/cartpole_ppo_{TS}.torch", algorithm="ppo", episodes=10, render=True, fps=60)
 
-    # === 模式 2: 你的 DQN (Student) ===
+    # === 模式 2:  DQN (Student) ===
     elif args.mode == 'dqn':
         print("\n=== Running DQN Student Training (Imitation + RL) ===")
         pretrained_model = "models/pretrained_dqn.torch"
@@ -494,7 +494,7 @@ if __name__ == "__main__":
         print("\n=== Final Evaluation (Target: >475) ===")
         evaluate_agent(algorithm="dqn", episodes=100, render=False, if_agent=True, agent=agent)
 
-    # === 模式 3: 你的 Physics (Teacher) ===
+    # === 模式 3:  Physics (Teacher) ===
     elif args.mode == 'physics':
         print("\n=== Running Physics Teacher Demo ===")
         cfg = PhysicsConfig(theta_coef=1.0, omega_coef=1.0, pos_coef=0.1, vel_coef=0.1)
