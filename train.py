@@ -200,7 +200,7 @@ def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, 
     save_path = ""
     if isinstance(config, DQNConfig):
         agent = DQNSolver(obs_dim, act_dim, cfg=config)
-        if save:  # 如果要保存模型
+        if save:
             os.makedirs(MODEL_DIR, exist_ok=True)
             print(f"[Info] Using device: {agent.device}")
             params = [

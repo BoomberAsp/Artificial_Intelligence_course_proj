@@ -135,12 +135,12 @@ if __name__ == "__main__":
         # 1. 执行微调训练
         student_agent = train_student_agent(num_episodes=args.episodes)
 
-        # 2. 训练完立刻考核 (方便你看效果)
+        # 2. 训练完立刻考核 (方便看效果)
         if student_agent:
             print("\n=== Fine-tuning Complete. Immediate Evaluation ===")
             evaluate_agent(
                 algorithm="dqn",
-                episodes=10,  # 考 100 局
+                episodes=10,
                 render=args.render,
                 fps=60,
                 if_agent=True,
