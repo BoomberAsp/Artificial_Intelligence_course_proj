@@ -20,6 +20,7 @@ import numpy as np
 import gymnasium as gym
 import torch
 import time
+import matplotlib.pyplot as plt
 
 from agents.cartpole_dqn import DQNSolver, DQNConfig
 from agents.cartpole_ac import ACSolver, ACConfig
@@ -132,6 +133,10 @@ def train_ppo(num_episodes: int = 200, terminal_penalty: bool = True, save_path 
     # Infer observation/action dimensions from the env spaces
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.n
+    
+    # for evaluation:
+    step_record = [] # 记录每次运行的step步数
+    renew_record = [] # int,记录后发生renew的步数
 
     # Construct agent with default config (students can swap configs here)
     agent = PPOSolver(obs_dim, act_dim, cfg=PPOConfig())
@@ -140,6 +145,7 @@ def train_ppo(num_episodes: int = 200, terminal_penalty: bool = True, save_path 
 
     print(f"[Info] Using device: {agent.device}")
 
+    
     # Episode loop
     for run in range(1, num_episodes + 1):
         # Gymnasium reset returns (obs, info). Seed for repeatability.
@@ -147,6 +153,8 @@ def train_ppo(num_episodes: int = 200, terminal_penalty: bool = True, save_path 
         state = np.reshape(state, (1, obs_dim))
         steps = 0
 
+        # 本集内所有触发训练的 step（可能为空）
+        renew_steps_this_episode: list[int] = []
         while True:
             steps += 1
 
@@ -172,13 +180,30 @@ def train_ppo(num_episodes: int = 200, terminal_penalty: bool = True, save_path 
             # 6. Move to next state
             state = next_state
 
+            # 这里is_renewing在agent.step中触发
+            # 记录本集内的所有 "开始训练" 时刻
+            if getattr(agent, "is_renewing", False):
+                renew_steps_this_episode.append(steps)
+                # 重置标志，避免在下一步又误判
+                agent.is_renewing = False
+            
+            # 强制早停
+            if steps>1000:
+                done = True
+                
             # 7. Episode end: log and break
             if done:
                 print(f"Run: {run}, Score: {steps}")
                 logger.add_score(steps, run)  # writes CSV + updates score PNG
+                renew_record.append(renew_steps_this_episode)
+                step_record.append(steps)
                 break
 
     env.close()
+    
+    # 把记录挂在 agent 上，方便外部画图使用
+    agent.step_record = step_record              # List[int]
+    agent.renew_record = renew_record            # List[List[int]]
     # Persist the trained model
     if saved:
         agent.save(save_path)
@@ -189,6 +214,55 @@ def train_ppo(num_episodes: int = 200, terminal_penalty: bool = True, save_path 
 #     # TODO: 实现单个episode的训练逻辑
 #     pass
 
+def plot_training_progress(step_record,
+                           renew_record,
+                           title: str = "PPO CartPole Training Progress",
+                           save_path: str | None = None):
+    """
+    绘制训练过程中：
+      - 每一集的总步数（柱状图）
+      - 每一集内部所有触发训练的 step（在柱子上画多条竖线）
+    """
+    steps = np.array(step_record, dtype=np.int32)
+    episodes = np.arange(1, len(steps) + 1)
+
+    # renew_record 是 List[List[int]]，长度应与 step_record 一致
+    assert len(step_record) == len(renew_record), "step_record 与 renew_record 长度必须一致"
+
+    plt.figure(figsize=(12, 6))
+
+    # 1. 柱状图：每集步数
+    bar_width = 0.8
+    plt.bar(episodes, steps, width=bar_width, alpha=0.7, label="Steps per episode")
+
+    # 2. 在每根柱子上画所有更新点
+    for ep_idx, (ep, total_steps) in enumerate(zip(episodes, steps)):
+        renew_steps = renew_record[ep_idx]  # List[int]
+        for rs in renew_steps:
+            if 0 < rs <= total_steps:
+                # 在该 episode 柱子上画一条红色虚线，表示第 rs 步触发训练
+                plt.vlines(x=ep,
+                           ymin=0,
+                           ymax=rs,
+                           colors="red",
+                           linestyles="dashed",
+                           linewidth=1.0)
+
+    plt.xlabel("Episode")
+    plt.ylabel("Steps")
+    plt.title(title)
+    plt.grid(axis="y", alpha=0.3)
+    # 可以在 legend 里标注线条含义
+    from matplotlib.lines import Line2D
+    custom_line = Line2D([0], [0], color="red", linestyle="dashed", linewidth=1.0)
+    plt.legend(handles=[custom_line], labels=["Training updates"], loc="upper left")
+
+    plt.tight_layout()
+
+    if save_path is not None:
+        plt.savefig(save_path, dpi=150)
+
+    plt.show()
 
 def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, float]:
     env = gym.make("CartPole-v1")
@@ -445,7 +519,13 @@ if __name__ == "__main__":
             terminal_penalty=True,
             save_path=current_ppo_path  # <--- 这里必须传，否则它会存成默认名字
         )
-
+        
+        plot_training_progress(
+            agent.step_record,
+            agent.renew_record,
+            title="PPO CartPole — Steps and Update Points",
+            save_path="ppo_training_steps.png"
+        )
         # 2. 评估时，使用同一个路径
         evaluate_agent(
             model_path=current_ppo_path,
