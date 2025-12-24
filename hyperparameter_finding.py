@@ -670,11 +670,11 @@ class HyperparamTuner:
                 # 原有的训练逻辑（作为备选）
                 obs_dim = env.observation_space.shape[0]
                 act_dim = env.action_space.n
-                if self.algorithm == "dqn":
+                if agent_type == "dqn":
                     agent = DQNSolver(obs_dim, act_dim, cfg=config)
-                elif self.algorithm == "ppo":
+                elif agent_type == "ppo":
                     agent = PPOSolver(obs_dim, act_dim,cfg=config)
-                elif self.algorithm == "pdqn":
+                elif agent_type == "pdqn":
                     agent = PDQNSolver(obs_dim, act_dim, cfg=config)
                 scores = []
                 # self.run_trials(agent, scores)

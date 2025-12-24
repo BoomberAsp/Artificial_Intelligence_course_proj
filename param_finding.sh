@@ -1,1 +1,1 @@
-python hyperparameter_finding.py --algorithm pdqn --trials 100 --episodes 300 --parallel --use-gpu
+python hyperparameter_finding.py --algorithm pdqn --trials 1 --episodes 300 --parallel --use-gpu

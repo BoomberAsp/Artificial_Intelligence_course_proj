@@ -97,27 +97,41 @@ class PriorityReplayBuffer(ReplayBuffer):
 
 class PDQNConfig(DQNConfig):
     def __init__(self, **kwargs):
-        # 调用父类初始化
-        super().__init__(**kwargs)
-        self.alpha = kwargs.pop('alpha', 0.6)
-        self.beta = kwargs.pop('beta', 0.4)  # 从0.4开始
-        self.beta_increment = kwargs.pop('beta_increment', 0.001)
+        # 使用 kwargs 中的值，如果不存在则使用 PAPER_CONFIG 的默认值
+        # 创建合并的参数字典
+        merged_kwargs = PAPER_CONFIG.copy()
+        merged_kwargs.update(kwargs)  # kwargs 优先级更高
+        merged_kwargs.pop("alpha")
+        merged_kwargs.pop("beta")
+        merged_kwargs.pop("beta_increment")
 
 
-        self.alpha = PAPER_CONFIG.get('alpha', 0.6)
-        self.beta = PAPER_CONFIG.get('beta', 0.4)
-        self.beta_increment = PAPER_CONFIG.get('beta_increment', 0.001)
-        self.batch_size = PAPER_CONFIG.get('batch_size', 32)
-        self.memory_size = PAPER_CONFIG.get('memory_size', 50000)
-        self.target_update = PAPER_CONFIG.get('target_update', 1000)
-        self.eps_start = PAPER_CONFIG.get('eps_start', 1.0)
-        self.eps_end = PAPER_CONFIG.get('eps_end', 0.01)
-        self.eps_decay = PAPER_CONFIG.get('eps_decay', 0.999)
-        self.initial_exploration = PAPER_CONFIG.get('initial_exploration', 1000)
-        self.alpha = PAPER_CONFIG.get('alpha', self.alpha)
-        self.beta = PAPER_CONFIG.get('beta', self.beta)
-        self.beta_increment = PAPER_CONFIG.get('beta_increment', 0.001)
-        self.lr = PAPER_CONFIG.get('lr', 0.001)
+        # 调用父类初始化，传入合并后的参数
+        super().__init__(**merged_kwargs)
+
+        self.alpha = kwargs.get('alpha', 0.6)
+        self.beta = kwargs.get('beta', 0.4)  # 从0.4开始
+        self.beta_increment = kwargs.get('beta_increment', 0.001)
+
+        # super().__init__(**kwargs)
+
+
+
+
+        # self.alpha = PAPER_CONFIG.get('alpha', 0.6)
+        # self.beta = PAPER_CONFIG.get('beta', 0.4)
+        # self.beta_increment = PAPER_CONFIG.get('beta_increment', 0.001)
+        # self.batch_size = PAPER_CONFIG.get('batch_size', 32)
+        # self.memory_size = PAPER_CONFIG.get('memory_size', 50000)
+        # self.target_update = PAPER_CONFIG.get('target_update', 1000)
+        # self.eps_start = PAPER_CONFIG.get('eps_start', 1.0)
+        # self.eps_end = PAPER_CONFIG.get('eps_end', 0.01)
+        # self.eps_decay = PAPER_CONFIG.get('eps_decay', 0.999)
+        # self.initial_exploration = PAPER_CONFIG.get('initial_exploration', 1000)
+        # self.alpha = PAPER_CONFIG.get('alpha', self.alpha)
+        # self.beta = PAPER_CONFIG.get('beta', self.beta)
+        # self.beta_increment = PAPER_CONFIG.get('beta_increment', 0.001)
+        # self.lr = PAPER_CONFIG.get('lr', 0.001)
 
         self.replay_buffer_type = PriorityReplayBuffer
         self.replay_buffer_params = {

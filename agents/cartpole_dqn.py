@@ -49,34 +49,82 @@ EPS_DECAY = 0.995
 TARGET_UPDATE_STEPS = 500
 
 
-class QNet(nn.Module):
-    """
-    A simple fully connected MLP to approximate Q(s, a).
-    """
+# class QNet(nn.Module):
+#     """
+#     A simple fully connected MLP to approximate Q(s, a).
+#     """
+#
+#     def __init__(self, obs_dim: int, act_dim: int):
+#         super().__init__()
+#         # self.net = nn.Sequential(
+#         #     nn.Linear(obs_dim, 64),
+#         #     nn.ReLU(),
+#         #     nn.Linear(64, act_dim),
+#         # )
+#
+#         # original better NNet:
+#         self.net = nn.Sequential(
+#             nn.Linear(obs_dim, 128),
+#             nn.ReLU(),
+#             nn.Linear(128, 128),
+#             nn.ReLU(),
+#             nn.Linear(128, act_dim),
+#         )
+#
+#         for m in self.modules():
+#             if isinstance(m, nn.Linear):
+#                 nn.init.xavier_uniform_(m.weight)
+#
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         # x: [B, obs_dim] → returns Q(s,·): [B, act_dim]
+#         return self.net(x)
 
-    def __init__(self, obs_dim: int, act_dim: int):
+
+class QNet(nn.Module):
+    """可配置的神经网络"""
+
+    def __init__(self, obs_dim: int, act_dim: int,
+                 hidden_layers: List[int] = [128, 128],
+                 activation: str = 'relu',
+                 dropout_rate: float = 0.0):
         super().__init__()
-        # self.net = nn.Sequential(
-        #     nn.Linear(obs_dim, 64),
-        #     nn.ReLU(),
-        #     nn.Linear(64, act_dim),
-        # )
-        
-        # original better NNet:
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(128, act_dim),
-        )
-        
+
+        # 激活函数映射
+        activation_fn = {
+            'relu': nn.ReLU,
+            'tanh': nn.Tanh,
+            'sigmoid': nn.Sigmoid,
+            'leaky_relu': nn.LeakyReLU,
+            'elu': nn.ELU,
+            'gelu': nn.GELU
+        }.get(activation.lower(), nn.ReLU)
+
+        # 构建网络层
+        layers = []
+        in_features = obs_dim
+
+        for i, out_features in enumerate(hidden_layers):
+            layers.append(nn.Linear(in_features, out_features))
+            layers.append(activation_fn())
+
+            if dropout_rate > 0:
+                layers.append(nn.Dropout(dropout_rate))
+
+            in_features = out_features
+
+        # 输出层
+        layers.append(nn.Linear(in_features, act_dim))
+
+        self.net = nn.Sequential(*layers)
+
+        # 初始化权重
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B, obs_dim] → returns Q(s,·): [B, act_dim]
         return self.net(x)
 
 

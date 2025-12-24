@@ -86,7 +86,7 @@ def train_student_agent(num_episodes: int = 20):
                 logger.add_score(steps, run)
 
                 # 保存最佳
-                if steps >= 450 and steps >= best_score:
+                if steps >= 475 and steps >= best_score:
                     best_score = steps
                     agent.save(best_path)
                     print(f"  ★ New Best ({steps}) saved.")
