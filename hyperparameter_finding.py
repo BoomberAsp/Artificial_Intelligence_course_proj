@@ -21,6 +21,7 @@ import multiprocessing
 import traceback
 
 from agents.cartpole_dqn import DQNConfig, DQNSolver
+from agents.cartpole_dqn_priority import PDQNConfig, PDQNSolver
 from agents.cartpole_ppo import PPOConfig, PPOSolver
 
 class HyperparamTuner:
@@ -33,7 +34,7 @@ class HyperparamTuner:
         """定义每个超参数的采样范围"""
         spaces = {
             "dqn": {
-                "learning_rate": ((1e-4, 1e-2), 'log'),
+                "lr": ((1e-4, 1e-2), 'log'),
                 "gamma": ((0.9, 0.999), 'uniform'),
                 "batch_size": ([16, 32, 64, 128], 'choice'),
                 "memory_size": ((10000, 100000), 'int'),
@@ -56,6 +57,21 @@ class HyperparamTuner:
                 "memory_size": ([1024, 2048, 4096, 8192], 'choice'),
                 "minibatch_size": ([32, 64, 128, 256], 'choice'),
                 "epoch": ([4, 8, 16, 32], 'choice'),
+            },
+            "pdqn": {  # 添加 PDQN 搜索空间
+                "lr": ((1e-4, 1e-2), 'log'),
+                "gamma": ((0.9, 0.999), 'uniform'),
+                "batch_size": ([16, 32, 64, 128], 'choice'),
+                "memory_size": ((10000, 100000), 'int'),
+                "target_update": ([100, 500, 1000], 'choice'),
+                "eps_start": ((0.9, 1.0), 'uniform'),
+                "eps_end": ((0.01, 0.1), 'uniform'),
+                "eps_decay": ((0.99, 0.999), 'uniform'),
+                "initial_exploration": ((500, 2000), 'int'),
+                # PDQN 特有参数
+                "alpha": ((0.5, 0.7), 'uniform'),  # 优先级强度
+                "beta": ((0.4, 0.6), 'uniform'),  # 重要性采样初始值
+                "beta_increment": ((0.0005, 0.002), 'log'),  # beta 增量
             }
             # TODO: add other parameter you want to adjust
         }
@@ -138,6 +154,22 @@ class HyperparamTuner:
                 eps_decay=params.get('eps_decay', 0.995),
                 initial_exploration=params.get('initial_exploration', 1000)
             )
+        elif self.algorithm == "pdqn":  # 添加 PDQN 配置
+            return PDQNConfig(
+                gamma=params.get('gamma', 0.99),
+                lr=params.get('learning_rate', 1e-3),  # 注意：PDQNConfig 使用 lr 而不是 learning_rate
+                batch_size=params.get('batch_size', 32),
+                memory_size=params.get('memory_size', 50000),
+                target_update=params.get('target_update', 500),
+                eps_start=params.get('eps_start', 1.0),
+                eps_end=params.get('eps_end', 0.05),
+                eps_decay=params.get('eps_decay', 0.995),
+                initial_exploration=params.get('initial_exploration', 1000),
+                # PDQN 特有参数
+                alpha=params.get('alpha', 0.6),
+                beta=params.get('beta', 0.4),
+                beta_increment=params.get('beta_increment', 0.001)
+            )
         # 未来可以添加其他算法的配置创建
         # TODO:
         elif self.algorithm == "ppo":
@@ -173,7 +205,7 @@ class HyperparamTuner:
         # 3. 训练和评估
         try:
             # 使用train.py中的函数
-            agent, avg_score = train.train_with_config(
+            agent, avg_score, saved_path = train.train_with_config(
                 config,
                 num_episodes=num_episodes,
                 save=False  # 不保存每个试验的模型，节省空间
@@ -476,7 +508,7 @@ class HyperparamTuner:
                     early_stop_threshold=trial["early_stop_threshold"],
                     early_stop_window_size=trial["early_stop_window_size"],
                     use_early_stopping=trial["use_early_stopping"],
-                    agent=trial["agent"],
+                    agent_type=trial["agent"],
                 )
 
                 future_to_trial[future] = trial["trial_id"]
@@ -530,7 +562,7 @@ class HyperparamTuner:
                                     early_stop_threshold: float = None,
                                     early_stop_window_size: int = None,
                                     use_early_stopping: bool = False,
-                                    agent: str|None = None ) -> Dict:
+                                    agent_type: str|None = None ) -> Dict:
         """
         在独立进程中运行单个试验
 
@@ -549,11 +581,12 @@ class HyperparamTuner:
         random.seed(seed)
         np.random.seed(seed)
 
-        # TODO:必须在函数内部导入，因为每个进程有独立的命名空间
+        # 必须在函数内部导入，因为每个进程有独立的命名空间
         import torch
         import gymnasium as gym
         from agents.cartpole_dqn import DQNConfig, DQNSolver
         from agents.cartpole_ppo import PPOConfig, PPOSolver
+        from agents.cartpole_dqn_priority import PDQNConfig, PDQNSolver
 
         # 设置设备
         if use_gpu and torch.cuda.is_available():
@@ -566,17 +599,17 @@ class HyperparamTuner:
         try:
             # 创建配置
             # TODO: 根据agent名称，配置config     
-            if not agent:
+            if not agent_type:
                 raise ValueError(...)
             
             env = gym.make("CartPole-v1")
             
             print("enter parallel training and create env successfully")
             
-            if agent == "dqn":
+            if agent_type == "dqn":
                 config = DQNConfig(
                     gamma=params.get('gamma', 0.99),
-                    lr=params.get('learning_rate', 1e-3),
+                    lr=params.get('lr', 1e-3),
                     batch_size=params.get('batch_size', 32),
                     memory_size=params.get('memory_size', 50000),
                     target_update=params.get('target_update', 500),
@@ -586,7 +619,7 @@ class HyperparamTuner:
                     initial_exploration=params.get('initial_exploration', 1000),
                     device=device
                 )
-            elif agent == "ppo":
+            elif agent_type == "ppo":
                 
                 config = PPOConfig(
                     gamma=params.get('gamma', 0.99),
@@ -600,21 +633,39 @@ class HyperparamTuner:
                     epoch=params.get('epoch', 16),
                     device=device,
                 )
+
+            elif agent_type == "pdqn":  # 添加 PDQN
+                config = PDQNConfig(
+                    gamma=params.get('gamma', 0.99),
+                    lr=params.get('lr', 1e-3),
+                    batch_size=params.get('batch_size', 32),
+                    memory_size=params.get('memory_size', 50000),
+                    target_update=params.get('target_update', 500),
+                    eps_start=params.get('eps_start', 1.0),
+                    eps_end=params.get('eps_end', 0.05),
+                    eps_decay=params.get('eps_decay', 0.995),
+                    initial_exploration=params.get('initial_exploration', 1000),
+                    alpha=params.get('alpha', 0.6),
+                    beta=params.get('beta', 0.4),
+                    beta_increment=params.get('beta_increment', 0.001),
+                    device=device,
+                )
                 
             if use_early_stopping and early_stop_patience is not None:
-                    agent_obj, scores = self.train_with_early_stopping(
-                        config=config,
-                        env=env,
-                        min_episodes=early_stop_min_episodes or 50,
-                        patience=early_stop_patience or 20,
-                        stop_threshold=early_stop_threshold or 495.0,
-                        window_size=early_stop_window_size or 10,
-                        num_episodes=num_episodes,
-                    )
-                    actual_episodes_trained = len(scores)
-                    avg_score = float(np.mean(scores[-10:])) if len(scores) > 0 else 0.0
-                    early_stopped = actual_episodes_trained < num_episodes
-                    stop_reason = "early_stopping" if early_stopped else "completed"    
+                print("启动早停")
+                agent_obj, scores = self.train_with_early_stopping(
+                    config=config,
+                    env=env,
+                    min_episodes=early_stop_min_episodes or 50,
+                    patience=early_stop_patience or 20,
+                    stop_threshold=early_stop_threshold or 495.0,
+                    window_size=early_stop_window_size or 10,
+                    num_episodes=num_episodes,
+                )
+                actual_episodes_trained = len(scores)
+                avg_score = float(np.mean(scores[-10:])) if len(scores) > 0 else 0.0
+                early_stopped = actual_episodes_trained < num_episodes
+                stop_reason = "early_stopping" if early_stopped else "completed"
             else:
                 # 原有的训练逻辑（作为备选）
                 obs_dim = env.observation_space.shape[0]
@@ -623,8 +674,11 @@ class HyperparamTuner:
                     agent = DQNSolver(obs_dim, act_dim, cfg=config)
                 elif self.algorithm == "ppo":
                     agent = PPOSolver(obs_dim, act_dim,cfg=config)
+                elif self.algorithm == "pdqn":
+                    agent = PDQNSolver(obs_dim, act_dim, cfg=config)
                 scores = []
                 # self.run_trials(agent, scores)
+                print("无早停")
 
                 for ep in range(1, num_episodes + 1):
                     state, _ = env.reset(seed=seed + ep)
@@ -634,16 +688,29 @@ class HyperparamTuner:
                     while True:
                         action = agent.act(state)
                         next_state_raw, reward, terminated, truncated, info = env.step(action)
+
+                        # 调试代码
+                        # print(f"terminated: {terminated}, truncated: {truncated}, reward: {reward}")
+
                         done = terminated or truncated
                         next_state = np.reshape(next_state_raw, (1, obs_dim))
 
-                        agent.step(state, action, reward, done)
+                        # 根据 agent_type 调用不同的 step 方法
+                        if agent_type == "dqn":
+                            agent.step(state, action, float(reward), next_state, done)
+                        elif agent_type == "ppo":
+                            agent.step(state, action, float(reward), done)
+                        elif agent_type == "pdqn":
+                            agent.step(state, action, float(reward), next_state, done)
 
                         # 6. Move to next state
                         state = next_state
                         steps += 1
                         # 7. Episode end: log and break
                         if done:
+                            # 调试代码
+                            # print("done after {} steps".format(steps))
+
                             scores.append(steps)
                             break
                         
@@ -782,24 +849,7 @@ class HyperparamTuner:
             return str(obj)
 
 
-    # 修改train.py，使其能接受外部配置
-# def train_with_early_stopping(agent, env, min_episodes=50, patience=20, num_episodes=200):
-#     """如果连续patience个episode没改进就提前停止"""
-#     best_score = -float('inf')
-#     no_improve = 0
-#     for episode in range(num_episodes):
-#         # ... 训练逻辑
-#         # TODO: 实现训练一个episode并返回得分的逻辑，见train.py中的train_episode_dqn函数
-#         agent, score = train.train_episode_dqn(agent, env)  # 假设有train_episode函数返回该episode得分
-#
-#         if score > best_score:
-#             best_score = score
-#             no_improve = 0
-#         else:
-#             no_improve += 1
-#             if no_improve >= patience and episode > min_episodes:
-#                 break
-#     return best_score
+
 
 
     def train_with_early_stopping(self, config, env, min_episodes=50, patience=20,
@@ -814,6 +864,8 @@ class HyperparamTuner:
             agent = DQNSolver(obs_dim, act_dim, cfg=config)
         elif self.algorithm == "ppo":
             agent = PPOSolver(obs_dim, act_dim,cfg = config)
+        elif self.algorithm == "pdqn":
+            agent = PDQNSolver(obs_dim, act_dim, cfg = config)
 
         best_score = -float('inf')
         no_improve = 0

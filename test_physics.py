@@ -1,7 +1,8 @@
 from agents.cartpole_physics import PhysicsAgent, PhysicsConfig
 from train import evaluate_agent
 
-if __name__ == "__main__":
+
+def main():
     print("=== 正在测试 Physics Agent (物理规则控制器) ===")
 
     # 1. 配置参数
@@ -25,3 +26,7 @@ if __name__ == "__main__":
         if_agent=True,  # [关键] 告诉函数直接使用传入的 agent 实例
         agent=teacher  # 传入 teacher 实例
     )
+
+
+if __name__ == "__main__":
+   main()
