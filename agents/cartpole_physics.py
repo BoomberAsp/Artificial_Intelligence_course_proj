@@ -36,7 +36,7 @@ class PhysicsAgent:
             cfg.omega_coef
         ])
 
-    def act(self, state, evaluation_mode=False):
+    def act(self, state):
         """
         根据物理公式决定动作。
         公式: Score = w1*x + w2*v + w3*theta + w4*omega

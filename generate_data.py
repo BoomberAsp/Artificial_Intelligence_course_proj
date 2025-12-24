@@ -14,7 +14,7 @@ def generate_expert_dataset(num_samples=10000, save_path="data/expert_data.pt"):
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.n
 
-    # 使用刚才测试成功的“冠军参数”
+    # 最好参数
     best_cfg = PhysicsConfig(
         theta_coef=1.0,
         omega_coef=1.0,
@@ -27,16 +27,17 @@ def generate_expert_dataset(num_samples=10000, save_path="data/expert_data.pt"):
 
     # 2. 数据容器
     # 我们需要收集：当前状态 (Obs) -> 老师的动作 (Action)
-    # 也可以收集历史信息 (History)，这取决于你的 HybridQNet 怎么设计
-    # 这里我们先收集基础的 (State, Action)，Hybrid 的历史可以在训练时动态构建
+    # 这里我们先收集基础的 (State, Action)
     collected_states = []
     collected_actions = []
+   # states_and_actions = []
 
     state, _ = env.reset()
     total_steps = 0
 
     while len(collected_states) < num_samples:
         # 记录当前状态
+       # state_and_action = tuple()
         collected_states.append(state)
 
         # 老师做决策
