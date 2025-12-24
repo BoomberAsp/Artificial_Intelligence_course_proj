@@ -170,6 +170,8 @@ class PPOSolver:
         
         self.steps = 0
         self.update_idx = 0  # 第几轮 PPO 更新
+        
+        self.is_renewing = False # 画图时使用，表示哪一步触发了一波更新
 
         # Global counters, 训练过程中的简单日志，方便画图
         self.train_log = {
@@ -237,6 +239,7 @@ class PPOSolver:
         # self.steps += 1
         
         if len(self.memory) >= self.cfg.memory_size:
+            self.is_renewing = True
             self.experience_replay()
             self.memory.clear()
 
