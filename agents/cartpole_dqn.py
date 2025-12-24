@@ -56,20 +56,20 @@ class QNet(nn.Module):
 
     def __init__(self, obs_dim: int, act_dim: int):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, 64), 
-            nn.ReLU(),
-            nn.Linear(64, act_dim), 
-        )
+        # self.net = nn.Sequential(
+        #     nn.Linear(obs_dim, 64),
+        #     nn.ReLU(),
+        #     nn.Linear(64, act_dim),
+        # )
         
         # original better NNet:
-        # self.net = nn.Sequential(
-        #     nn.Linear(obs_dim, 128),
-        #     nn.ReLU(),
-        #     nn.Linear(128, 128),
-        #     nn.ReLU(),
-        #     nn.Linear(128, act_dim),
-        # )
+        self.net = nn.Sequential(
+            nn.Linear(obs_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, act_dim),
+        )
         
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -304,7 +304,7 @@ class DQNSolver:
         Note: Only loads weights; if you serialized optim state, add it here.
         """
         # For untrusted files, consider torch.load(..., weights_only=True) in future PyTorch
-        ckpt = torch.load(path, map_location=self.device)
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
         self.online.load_state_dict(ckpt["online"])
         self.target.load_state_dict(ckpt["target"])
         # Optional: restore cfg from ckpt["cfg"] if you want to enforce same hyperparams

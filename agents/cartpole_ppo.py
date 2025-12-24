@@ -24,16 +24,16 @@ from pathlib import Path
 # -----------------------------
 # PPO-specific Hyperparameters
 # -----------------------------
-GAMMA = 0.99             # reward discount in TD error
-VALUE_COEF = 0.54        # critic loss 权重
-ENTROPY_COEF = 0.002     # 熵正则，鼓励探索
-LEARNING_RATE = 0.00015              # learning rate for critic
-LAMBDA_GAE = 0.95       # GAE的指数加权平均，用来平衡：0等价TD(0)，1等价Monte Carlo
-CLIP_EPS = 0.2        # clip参数，用来限制跨度太大的参数变化
+GAMMA = 0.92             # reward discount in TD error
+VALUE_COEF = 0.64        # critic loss 权重
+ENTROPY_COEF = 0.0024     # 熵正则，鼓励探索
+LEARNING_RATE = 0.0001564              # learning rate for critic
+LAMBDA_GAE = 0.908       # GAE的指数加权平均，用来平衡：0等价TD(0)，1等价Monte Carlo
+CLIP_EPS = 0.1228        # clip参数，用来限制跨度太大的参数变化
 # --------取样训练-------
-MEMORY_SIZE = 1024       # 单次获得的数据批量
-MINIBATCH_SIZE = 64     # 每次从batch里面找多长的sub序列
-EPOCH = 16              # 从堆里面取多少次
+MEMORY_SIZE = 512       # 单次获得的数据批量
+MINIBATCH_SIZE = 128     # 每次从batch里面找多长的sub序列
+EPOCH = 4              # 从堆里面取多少次
 
 
 
@@ -171,6 +171,11 @@ class PPOSolver:
         self.steps = 0
         self.update_idx = 0  # 第几轮 PPO 更新
         
+        # train 中画图评估用
+        self.step_record = [] 
+        self.renew_record = []   
+        self.boundary_distances = []
+        self.mean_score_each_replay = []
         self.is_renewing = False # 画图时使用，表示哪一步触发了一波更新
 
         # Global counters, 训练过程中的简单日志，方便画图
@@ -204,7 +209,9 @@ class PPOSolver:
             if s_np.ndim == 1:
                 s_np = s_np[None, :]  # (1, obs_dim)
             s = torch.as_tensor(s_np, dtype=torch.float32, device=self.device)
-            dist,value = self.net(s)  # [1, act_dim] # 似乎不用可以避免空间浪费，有空试试
+
+            dist,value = self.net(s)  # [1, act_dim] 通过网络，这里的critic的value会进入数据集
+
             if evaluation_mode:
                 # 测试 / eval：用“运用”策略，取概率最大的动作
                 action = torch.argmax(dist.probs, dim=1)
@@ -235,6 +242,7 @@ class PPOSolver:
         1. Store the transition (s,a,r,s',done) in the replay buffer.
         2. Trigger one learning step (experience_replay) which samples from the buffer.
         """
+        # reward_modified = self.get_reward_with_position_penalty(state, reward)
         self.remember(state, action, reward, done, self._last_logp, self._last_value)
         # self.steps += 1
         
@@ -243,6 +251,35 @@ class PPOSolver:
             self.experience_replay()
             self.memory.clear()
 
+    def get_reward_with_position_penalty(self, state, reward):
+        """
+        给原始奖励添加位置惩罚
+        state: [x, x_dot, theta, theta_theta_dot]
+        """
+        x_pos, x_dot, theta, theta_dot = state
+        total_reward = float(reward)  # 通常是1.0
+        
+        # 基础惩罚系数要非常小
+        BASE_PENALTY_COEFF = 0.01  # 从1%开始
+        
+        # 1. 位置惩罚（软惩罚）
+        boundary = 2.4
+        # 使用sigmoid-like函数，在边界处平滑增加
+        pos_norm = abs(x_pos) / boundary  # 0-1之间
+        position_penalty = BASE_PENALTY_COEFF * (pos_norm ** 4)  # 四次方但系数小
+        total_reward -= position_penalty
+        
+        # 2. 角度惩罚（更小）
+        angle_threshold = 0.209  # 24度
+        angle_norm = min(abs(theta) / angle_threshold, 1.0)
+        angle_penalty = BASE_PENALTY_COEFF * 0.5 * (angle_norm ** 2)
+        total_reward -= angle_penalty
+        
+        # 确保总奖励仍然是正的（PPO对负奖励敏感）
+        if total_reward < 0.1:
+            total_reward = 0.1  # 设置最小值
+        
+        return total_reward
 
     def experience_replay(self):
         """

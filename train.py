@@ -13,6 +13,7 @@ Student reading map:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 import time
@@ -26,6 +27,7 @@ from agents.cartpole_dqn import DQNSolver, DQNConfig
 from agents.cartpole_ac import ACSolver, ACConfig
 from agents.cartpole_ppo import PPOSolver, PPOConfig
 from agents.cartpole_physics import PhysicsAgent, PhysicsConfig
+from agents.cartpole_dqn_priority import PDQNConfig, PDQNSolver, PriorityReplayBuffer, create_pdqn_solver
 
 from scores.score_logger import ScoreLogger
 
@@ -112,6 +114,8 @@ def train_dqn(num_episodes: int = 1024, terminal_penalty: bool = True, save_path
         agent.save(save_path)
         print(f"[Train] Model saved to {save_path}")
     return agent
+
+
 def train_ppo(num_episodes: int = 200, terminal_penalty: bool = True, save_path = MODEL_PATH, saved = True, config_path = None) -> PPOSolver:
     """
     Main training loop:
@@ -214,6 +218,62 @@ def train_ppo(num_episodes: int = 200, terminal_penalty: bool = True, save_path 
 #     # TODO: 实现单个episode的训练逻辑
 #     pass
 
+
+def train_pdqn(num_episodes: int = 1024, terminal_penalty: bool = True, save_path=MODEL_PATH, saved=True,
+               config_path=None) -> PDQNSolver:
+    """
+    PDQN 训练函数
+    基本与 train_dqn 相同，但使用 PDQNSolver
+    """
+    if saved:
+        os.makedirs(MODEL_DIR, exist_ok=True)
+
+    env = gym.make(ENV_NAME)
+    logger = ScoreLogger(ENV_NAME)
+
+    obs_dim = env.observation_space.shape[0]
+    act_dim = env.action_space.n
+
+    # 使用 PDQNConfig 和 PDQNSolver
+    agent = PDQNSolver(obs_dim, act_dim, cfg=PDQNConfig())
+    if config_path:
+        agent.load_config(config_path)
+
+    print(f"[Info] Using device: {agent.device}")
+
+    # Episode loop (与 train_dqn 相同)
+    for run in range(1, num_episodes + 1):
+        state, info = env.reset(seed=run)
+        state = np.reshape(state, (1, obs_dim))
+        steps = 0
+
+        while True:
+            steps += 1
+            action = agent.act(state)
+            next_state_raw, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+
+            if terminal_penalty and done:
+                reward = -1.0
+
+            next_state = np.reshape(next_state_raw, (1, obs_dim))
+            agent.step(state, action, reward, next_state, done)
+            state = next_state
+
+            if done:
+                print(f"Run: {run}, Epsilon: {agent.exploration_rate:.3f}, Score: {steps}")
+                logger.add_score(steps, run)
+                break
+
+    env.close()
+
+    if saved:
+        agent.save(save_path)
+        print(f"[Train] PDQN Model saved to {save_path}")
+
+    return agent
+
+
 def plot_training_progress(step_record,
                            renew_record,
                            title: str = "PPO CartPole Training Progress",
@@ -264,7 +324,7 @@ def plot_training_progress(step_record,
 
     plt.show()
 
-def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, float]:
+def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, float, str]:
     env = gym.make("CartPole-v1")
     # ===========根据config创建agent==========
     obs_dim = env.observation_space.shape[0]
@@ -272,36 +332,61 @@ def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, 
     agent = None
     description = ""
     save_path = ""
-    if isinstance(config, DQNConfig):
+
+    if isinstance(config, PDQNConfig):
+        agent = PDQNSolver(obs_dim, act_dim, cfg=config)
+        if save:
+            os.makedirs(MODEL_DIR, exist_ok=True)
+            print(f"[Info] Using device: {agent.device}")
+
+            params = [
+                str("%.4f"%config.gamma),
+                str("%.4f"%config.lr),
+                str(config.batch_size),
+                str(config.memory_size),
+                str("%.2f"%config.initial_exploration),
+                str("%.2f"%config.eps_start),
+                str("%.2f"%config.eps_end),
+                str("%.2f"%config.eps_decay),
+                str("%.2f"%config.target_update),
+                str("%.2f"%config.alpha),  # 添加 PDQN 特定参数
+                str("%.2f"%config.beta),  # 添加 PDQN 特定参数
+                str("%.2f"%config.beta_increment)  # 添加 PDQN 特定参数
+            ]
+            description = "_".join(params)
+            save_path = MODEL_DIR
+
+    elif isinstance(config, DQNConfig):
         agent = DQNSolver(obs_dim, act_dim, cfg=config)
         if save:
             os.makedirs(MODEL_DIR, exist_ok=True)
             print(f"[Info] Using device: {agent.device}")
             params = [
-                str(config.gamma),
-                str(config.lr),
+                str("%.4f"%config.gamma),
+                str("%.4f"%config.lr),
                 str(config.batch_size),
                 str(config.memory_size),
-                str(config.initial_exploration),
-                str(config.eps_start),
-                str(config.eps_end),
-                str(config.eps_decay),
-                str(config.target_update)
+                str("%.2f"%config.initial_exploration),
+                str("%.2f"%config.eps_start),
+                str("%.2f"%config.eps_end),
+                str("%.2f"%config.eps_decay),
+                str("%.2f"%config.target_update)
             ]
             description = "_".join(params)  # 加在文件名后用于找寻超参组合
             save_path = MODEL_DIR
+
     elif isinstance(config, ACConfig):
         agent = ACConfig(obs_dim,act_dim, cfg=config)
         if save:  # 如果要保存模型
             os.makedirs(MODEL_DIR, exist_ok=True)
             print(f"[Info] Using device: {agent.device}")
             params = [
-                str(config.gamma),
-                str(config.lr),
-                str(config.batch_size),
-                str(config.memory_size),
-                str(config.value_coef),
-                str(config.entropy_coef)
+                str("%.2f"%config.gamma),
+                str("%.2f"%config.lr),
+                str("%.2f"%config.batch_size),
+                str("%.2f"%config.memory_size),
+                str("%.2f"%config.value_coef),
+                str("%.2f"%config.entropy_coef)
             ]
             description = "_".join(params)  # 加在文件名后用于找寻超参组合
             save_path = MODEL_DIR
@@ -312,16 +397,17 @@ def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, 
             os.makedirs(MODEL_DIR, exist_ok=True)
             print(f"[Info] Using device: {agent.device}")
             params = [
-                str(config.gamma),
-                str(config.learning_rate),
-                str(config.memory_size),
-                str(config.value_coef),
-                str(config.entropy_coef),
-                str(config.clip_eps),
-                str(config.lambda_gae),
-                str(config.minibatch_size),
-                str(config.epoch),
+                str("%.2f"%config.gamma),
+                str("%.2f"%config.learning_rate),
+                str("%.2f"%config.memory_size),
+                str("%.2f"%config.value_coef),
+                str("%.2f"%config.entropy_coef),
+                str("%.2f"%config.clip_eps),
+                str("%.2f"%config.lambda_gae),
+                str("%.2f"%config.minibatch_size),
+                str("%.2f"%config.epoch),
             ]
+            description = "_".join(params)
 
     elif isinstance(config, PhysicsConfig):
         agent = PhysicsAgent(obs_dim, act_dim, cfg=config)
@@ -330,16 +416,19 @@ def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, 
             # PhysicsAgent通常运行在CPU上，如果你的类里没有定义.device，可以将下面这行注释掉
             # print(f"[Info] Using device: {agent.device}")
             params = [
-                str(config.theta_coef),
-                str(config.omega_coef),
-                str(config.pos_coef),
-                str(config.vel_coef)
+                str("%.2f"%config.theta_coef),
+                str("%.2f"%config.omega_coef),
+                str("%.2f"%config.pos_coef),
+                str("%.2f"%config.vel_coef)
             ]
 
 
 
             description = "_".join(params)  # 加在文件名后用于找寻超参组合
             save_path = MODEL_DIR
+
+
+
     # TODO:实现其它agent时需要添加，用于调取对应的agent
     
 
@@ -350,14 +439,26 @@ def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, 
 
     # ==========训练、评估逻辑==========
     avg_score = 0.0
-    if isinstance(agent, DQNSolver):
+    if isinstance(agent, PDQNSolver):
+        saved_path = os.path.join(save_path, f"cartpole_pdqn_{description}.torch")
+        agent = train_pdqn(num_episodes=num_episodes,
+
+                           saved=save, save_path=saved_path)
+
+        scores, avg_score = evaluate_agent(algorithm="pdqn", episodes=100, render=False, if_agent=True, agent=agent)
+    elif isinstance(agent, DQNSolver):
+        saved_path = os.path.join(save_path, f"cartpole_dqn_{description}.torch")
         agent = train_dqn(num_episodes=num_episodes,
-                          saved=save, save_path=os.path.join(save_path, f"cartpole_dqn_{description}.torch"))
+                          saved=save, save_path=saved_path)
         scores, avg_score = evaluate_agent(algorithm="dqn", episodes=100, render=False, if_agent=True, agent=agent)
     elif isinstance(agent, PPOSolver):
+        saved_path = os.path.join(save_path, f"cartpole_ppo_{description}.torch")
         agent = train_ppo(num_episodes=num_episodes,
-                          saved=save, save_path=os.path.join(save_path, f"cartpole_ppo_{description}.torch"))
+                          saved=save, save_path=saved_path)
         scores, avg_score = evaluate_agent(algorithm="ac", episodes=100, render=False, if_agent=True, agent=agent)
+
+
+
 
     # TODO:实现其它agent时需要添加，用于调取对应的训练函数与评估函数
     # ================================
@@ -366,7 +467,7 @@ def train_with_config(config, num_episodes=200, save=False) -> tuple[DQNSolver, 
     elif avg_score == 0.0:
         raise ValueError("Evaluation failed, avg_score is 0.0")
 
-    return agent, avg_score
+    return agent, avg_score, saved_path
 
 
 def evaluate_agent(model_path: str | None = None,
@@ -419,6 +520,8 @@ def evaluate_agent(model_path: str | None = None,
         # TODO: (If you add PPO/A2C later, pick their agent classes by 'algorithm' here.)
         if algorithm.lower() == "dqn":
             agent = DQNSolver(obs_dim, act_dim, cfg=DQNConfig())
+        elif algorithm.lower() == "pdqn":
+            agent = PDQNSolver(obs_dim, act_dim, cfg=PDQNConfig())
         elif algorithm.lower() == "ppo":
             agent = PPOSolver(obs_dim, act_dim, cfg=PPOConfig())
         elif algorithm.lower() == "physics":
@@ -492,13 +595,16 @@ if __name__ == "__main__":
     evaluate_agent(model_path=f"models/cartpole_ppo_{TS}.torch", algorithm="ppo", episodes=500, render=True, fps=60)
 '''
 
-if __name__ == "__main__":
-    # [新增] 命令行参数控制
+
+
+def main():
     parser = argparse.ArgumentParser(description="CartPole Agent Runner")
-    parser.add_argument('--mode', type=str, default='ppo', choices=['dqn', 'ppo', 'physics', 'eval'],
-                        help='选择运行模式: dqn(你的学生), ppo(队友的代码), physics(老师演示), eval(评估)')
+    parser.add_argument('--mode', type=str, default='ppo', choices=['dqn', 'pdqn', 'ppo', 'physics', 'eval'],
+                        help='选择运行模式: dqn, pdqn, ppo, physics, eval(评估)')
     parser.add_argument('--path', type=str, default=None, help='模型路径 (仅eval模式)')
     parser.add_argument('--render', action='store_true', help='是否渲染画面')
+    parser.add_argument('--config', type=str, default=None, help='配置文件路径 (JSON格式)')  # 新增参数
+    parser.add_argument('--episodes', type=int, default=128, help='训练回合数')  # 新增参数
 
     args = parser.parse_args()
 
@@ -507,55 +613,342 @@ if __name__ == "__main__":
     np.random.seed(89800)
     torch.manual_seed(89800)
 
+    # 创建配置函数
+    def load_config_from_file(config_path: str, algorithm: str):
+        """从JSON文件加载配置"""
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_dict = json.load(f)
+
+            # 根据算法类型创建对应的配置对象
+            if algorithm == 'dqn':
+                # 确保所有必要的参数都存在
+                default_config = DQNConfig()
+                for key, value in config_dict.items():
+                    if hasattr(default_config, key):
+                        setattr(default_config, key, value)
+                return default_config
+            elif algorithm == 'ppo':
+                default_config = PPOConfig()
+                for key, value in config_dict.items():
+                    if hasattr(default_config, key):
+                        setattr(default_config, key, value)
+                return default_config
+            elif algorithm == 'pdqn':
+                default_config = PDQNConfig()
+                for key, value in config_dict.items():
+                    if hasattr(default_config, key):
+                        setattr(default_config, key, value)
+                return default_config
+            elif algorithm == 'physics':
+                default_config = PhysicsConfig()
+                for key, value in config_dict.items():
+                    if hasattr(default_config, key):
+                        setattr(default_config, key, value)
+                return default_config
+            else:
+                print(f"警告: 未知算法 {algorithm}，使用默认配置")
+                return None
+
+        except FileNotFoundError:
+            print(f"错误: 配置文件 {config_path} 不存在")
+            return None
+        except json.JSONDecodeError:
+            print(f"错误: 配置文件 {config_path} 格式错误")
+            return None
+        except Exception as e:
+            print(f"错误: 加载配置文件失败: {e}")
+            return None
+
     # === 模式 1:  PPO ===
     if args.mode == 'ppo':
-        print("\n=== Running PPO Training  ===")
-        # 先定义好路径，确保“存”和“取”用的是同一个变量
-        current_ppo_path = f"models/cartpole_ppo_{TS}.torch"
+        print("\n=== Running PPO Training ===")
 
-        # 1. 训练时，显式传入 save_path
-        agent = train_ppo(
-            num_episodes=128,
-            terminal_penalty=True,
-            save_path=current_ppo_path  # <--- 这里必须传，否则它会存成默认名字
-        )
-        
-        plot_training_progress(
-            agent.step_record,
-            agent.renew_record,
-            title="PPO CartPole — Steps and Update Points",
-            save_path="ppo_training_steps.png"
-        )
-        # 2. 评估时，使用同一个路径
+        # 优先使用配置文件，如果没有则使用默认配置
+        if args.config:
+            config = load_config_from_file(args.config, 'ppo')
+            if config is None:
+                print("使用默认配置继续训练...")
+                config = PPOConfig()
+        else:
+            config = PPOConfig()
+
+        print(f"使用配置: {config.__dict__}")
+
+        # 创建agent
+        obs_dim = 4  # CartPole状态维度
+        act_dim = 2  # CartPole动作维度
+        agent = PPOSolver(obs_dim, act_dim, cfg=config)
+
+        # 训练
+        print(f"开始训练，总回合数: {args.episodes}")
+        # agent = train_ppo(
+        #     num_episodes=args.episodes,
+        #     terminal_penalty=True,
+        #     save_path=f"models/cartpole_ppo_{TS}.torch",
+        #     saved=True,
+        #     config_path=args.config  # 不再需要config_path，因为配置已通过cfg传入
+        # )
+        agent,avg_score,saved_path = train_with_config(config=config,
+                                  num_episodes=args.episodes,
+                                  save=True)
+
+        print(f"训练完成，平均得分: {avg_score:.2f}")
+
+        # 绘制训练进度
+        if hasattr(agent, 'step_record') and hasattr(agent, 'renew_record'):
+            plot_training_progress(
+                agent.step_record,
+                agent.renew_record,
+                title="PPO CartPole — Steps and Update Points",
+                save_path=f"ppo_training_steps_{TS}.png"
+            )
+
+        # 评估
         evaluate_agent(
-            model_path=current_ppo_path,
+            model_path=saved_path,
             algorithm="ppo",
             episodes=10,
-            render=False,
+            render=args.render,
             fps=60
         )
-    # === 模式 2:  DQN (Student) ===
+
+    # === 模式 2:  DQN ===
     elif args.mode == 'dqn':
-        print("\n=== Standard DQN Training (From Scratch) ===")
-        # 直接 python train.py --mode dqn
-        agent = train_dqn(num_episodes=300, terminal_penalty=True)
-        evaluate_agent(model_path=f"models/cartpole_dqn_{TS}.torch", algorithm="dqn", episodes=10, render=False, fps=60)
+        print("\n=== Running DQN Training ===")
 
+        # 优先使用配置文件
+        if args.config:
+            config = load_config_from_file(args.config, 'dqn')
+            if config is None:
+                print("使用默认配置继续训练...")
+                config = DQNConfig()
+        else:
+            config = DQNConfig()
 
+        print(f"使用配置: {config.__dict__}")
 
-    # === 模式 3:  Physics (Teacher) ===
+        # 使用train_with_config进行训练
+        agent, avg_score, saved_path = train_with_config(
+            config=config,
+            num_episodes=args.episodes,
+            save=True
+        )
+
+        print(f"训练完成，平均得分: {avg_score:.2f}")
+
+        # 评估
+        # 需要从配置参数生成模型文件名
+        # params = [
+        #     str(config.gamma),
+        #     str(config.lr),
+        #     str(config.batch_size),
+        #     str(config.memory_size),
+        #     str(config.initial_exploration),
+        #     str(config.eps_start),
+        #     str(config.eps_end),
+        #     str(config.eps_decay),
+        #     str(config.target_update)
+        # ]
+        # description = "_".join(params)
+        # model_filename = f"cartpole_dqn_{description}.torch"
+
+        evaluate_agent(
+            model_path=saved_path,
+            algorithm="dqn",
+            episodes=10,
+            render=args.render,
+            fps=60
+        )
+
+    # === 模式 3:  PDQN ===
+    elif args.mode == 'pdqn':
+        print("\n=== Running PDQN Training ===")
+
+        # 优先使用配置文件
+        if args.config:
+            config = load_config_from_file(args.config, 'pdqn')
+            if config is None:
+                print("使用默认配置继续训练...")
+                config = PDQNConfig()
+        else:
+            config = PDQNConfig()
+
+        print(f"使用配置: {config.__dict__}")
+
+        # 使用train_with_config进行训练
+        agent, avg_score, saved_path = train_with_config(
+            config=config,
+            num_episodes=args.episodes,
+            save=True
+        )
+
+        print(f"训练完成，平均得分: {avg_score:.2f}")
+
+        # 评估
+        # params = [
+        #     str(config.gamma),
+        #     str(config.lr),
+        #     str(config.batch_size),
+        #     str(config.memory_size),
+        #     str(config.initial_exploration),
+        #     str(config.eps_start),
+        #     str(config.eps_end),
+        #     str(config.eps_decay),
+        #     str(config.target_update),
+        #     str(config.alpha),
+        #     str(config.beta),
+        #     str(config.beta_increment)
+        # ]
+        # description = "_".join(params)
+        # model_filename = f"cartpole_pdqn_{description}.torch"
+
+        evaluate_agent(
+            model_path=saved_path,
+            algorithm="pdqn",
+            episodes=10,
+            render=args.render,
+            fps=60
+        )
+
+    # === 模式 4:  Physics (Teacher) ===
     elif args.mode == 'physics':
         print("\n=== Running Physics Teacher Demo ===")
-        cfg = PhysicsConfig(theta_coef=1.0, omega_coef=1.0, pos_coef=0.1, vel_coef=0.1)
-        teacher = PhysicsAgent(4, 2, cfg=cfg)
-        evaluate_agent(algorithm="physics", episodes=5, render=False, fps=0, if_agent=True, agent=teacher)
 
-    # === 模式 4: 通用评估 ===
+        # 优先使用配置文件
+        if args.config:
+            config = load_config_from_file(args.config, 'physics')
+            if config is None:
+                print("使用默认配置继续训练...")
+                config = PhysicsConfig(theta_coef=1.0, omega_coef=1.0, pos_coef=0.1, vel_coef=0.1)
+        else:
+            config = PhysicsConfig(theta_coef=1.0, omega_coef=1.0, pos_coef=0.1, vel_coef=0.1)
+
+        teacher = PhysicsAgent(4, 2, cfg=config)
+        evaluate_agent(algorithm="physics",
+                       episodes=5,
+                       render=args.render,
+                       fps=60,
+                       if_agent=True,
+                       agent=teacher)
+
+    # === 模式 5: 通用评估 ===
     elif args.mode == 'eval':
         if not args.path:
             print("请提供模型路径: --path models/xxx.torch")
         else:
-            algo = "dqn" if "dqn" in args.path else "ppo"
-            evaluate_agent(model_path=args.path, algorithm=algo, episodes=100, render=False)
+            # 自动检测算法类型
+            if "dqn" in args.path.lower():
+                algo = "dqn"
+            elif "ppo" in args.path.lower():
+                algo = "ppo"
+            elif "pdqn" in args.path.lower():
+                algo = "pdqn"
+            else:
+                algo = "dqn"  # 默认
+
+            evaluate_agent(
+                model_path=args.path,
+                algorithm=algo,
+                episodes=100,
+                render=args.render,
+                fps=60
+            )
+
+
+if __name__ == "__main__":
+    # [新增] 命令行参数控制
+    # parser = argparse.ArgumentParser(description="CartPole Agent Runner")
+    # parser.add_argument('--mode', type=str, default='ppo', choices=['dqn', 'pdqn', 'ppo', 'physics', 'eval'],
+    #                     help='选择运行模式: dqn, pdqn, ppo, physics, eval(评估)')
+    # parser.add_argument('--path', type=str, default=None, help='模型路径 (仅eval模式)')
+    # parser.add_argument('--render', action='store_true', help='是否渲染画面')
+    #
+    # args = parser.parse_args()
+    #
+    # # 设置种子
+    # random.seed(89800)
+    # np.random.seed(89800)
+    # torch.manual_seed(89800)
+    #
+    # # === 模式 1:  PPO ===
+    # if args.mode == 'ppo':
+    #     print("\n=== Running PPO Training  ===")
+    #     # 先定义好路径，确保“存”和“取”用的是同一个变量
+    #     current_ppo_path = f"models/cartpole_ppo_{TS}.torch"
+    #
+    #     # 1. 训练时，显式传入 save_path
+    #     agent = train_ppo(
+    #         num_episodes=128,
+    #         terminal_penalty=True,
+    #         save_path=current_ppo_path  # <--- 这里必须传，否则它会存成默认名字
+    #     )
+    #
+    #     plot_training_progress(
+    #         agent.step_record,
+    #         agent.renew_record,
+    #         title="PPO CartPole — Steps and Update Points",
+    #         save_path="ppo_training_steps.png"
+    #     )
+    #     # 2. 评估时，使用同一个路径
+    #     evaluate_agent(
+    #         model_path=current_ppo_path,
+    #         algorithm="ppo",
+    #         episodes=10,
+    #         render=False,
+    #         fps=60
+    #     )
+    # # === 模式 2:  DQN (Student) ===
+    # elif args.mode == 'dqn':
+    #     print("\n=== Standard DQN Training (From Scratch) ===")
+    #     # 直接 python train.py --mode dqn
+    #     agent = train_dqn(num_episodes=300, terminal_penalty=True)
+    #     evaluate_agent(model_path=f"models/cartpole_dqn_{TS}.torch", algorithm="dqn", episodes=10, render=False, fps=60)
+    #
+    #     # 添加 PDQN 模式
+    # elif args.mode == 'pdqn':
+    #     print("\n=== Running PDQN Training (Priority DQN) ===")
+    #     current_pdqn_path = f"models/cartpole_pdqn_{TS}.torch"
+    #
+    #     # 注意：这里需要创建一个 PDQNConfig 配置
+    #     config = PDQNConfig()
+    #     # 可以调整 PDQN 特有参数
+    #     config.alpha = 0.6  # 优先级强度
+    #     config.beta = 0.4  # 重要性采样初始值
+    #     config.beta_increment = 0.001
+    #
+    #     agent = train_with_config(
+    #         config=config,
+    #         num_episodes=300,
+    #         save=True
+    #     )
+    #
+    #     evaluate_agent(
+    #         model_path=current_pdqn_path,
+    #         algorithm="pdqn",
+    #         episodes=10,
+    #         render=False,
+    #         fps=60
+    #     )
+    #
+    #
+    #
+    # # === 模式 3:  Physics (Teacher) ===
+    # elif args.mode == 'physics':
+    #     print("\n=== Running Physics Teacher Demo ===")
+    #     cfg = PhysicsConfig(theta_coef=1.0, omega_coef=1.0, pos_coef=0.1, vel_coef=0.1)
+    #     teacher = PhysicsAgent(4, 2, cfg=cfg)
+    #     evaluate_agent(algorithm="physics", episodes=5, render=False, fps=0, if_agent=True, agent=teacher)
+    #
+    # # === 模式 4: 通用评估 ===
+    # elif args.mode == 'eval':
+    #     if not args.path:
+    #         print("请提供模型路径: --path models/xxx.torch")
+    #     else:
+    #         algo = "dqn" if "dqn" in args.path else "ppo"
+    #         evaluate_agent(model_path=args.path, algorithm=algo, episodes=100, render=False)
+
+
+    main()
             # python train.py --mode eval --path "models/Best_weight_cartpole_dqn_12m6d18h26min.torch"
             #python train.py --mode eval --path "models/。。。.torch"
